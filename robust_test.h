@@ -132,7 +132,32 @@ static void _register_test(_TestInfo* test_info) { if (g_test_registry_head == N
 #endif
 #define _PASTE(a, b) a##b
 #define _CONCAT(a, b) _PASTE(a, b)
+
+/**
+ * @brief Defines a standard test case.
+ *
+ * This macro creates and registers a test function within a given test suite.
+ * The code block that follows the macro constitutes the body of the test.
+ *
+ * @param SuiteName The name of the test suite to which this test belongs.
+ * @param TestDescription A descriptive name for the test case.
+ */
 #define TEST_CASE(SuiteName, TestDescription) static void _CONCAT(test_func_, __LINE__)(void); _TEST_INITIALIZER(_CONCAT(test_registrar_, __LINE__)) { static _TestInfo ti = { #SuiteName, TestDescription, _CONCAT(test_func_, __LINE__), NULL, NULL }; _register_test(&ti); } static void _CONCAT(test_func_, __LINE__)(void)
+
+/**
+ * @brief Defines a "death test" case, which is expected to terminate abnormally.
+ *
+ * This is used for testing conditions that should cause the program to exit
+ * with a non-zero exit code or be terminated by a specific signal (e.g., segmentation fault).
+ *
+ * @param SuiteName The name of the test suite.
+ * @param TestDescription A descriptive name for the test case.
+ * @param ... A variadic list of key-value pairs to specify exit conditions.
+ *        Possible keys:
+ *        - .expected_msg: A substring expected to be present in stderr.
+ *        - .expected_signal: The signal number expected to terminate the process (POSIX-only).
+ *        - .expected_exit_code: The exact exit code expected from the process.
+ */
 #define TEST_DEATH_CASE(SuiteName, TestDescription, ...) static void _CONCAT(test_func_, __LINE__)(void); _TEST_INITIALIZER(_CONCAT(test_registrar_, __LINE__)) { static _DeathExpect de = { .expected_msg = NULL, .expected_signal = 0, .expected_exit_code = -1, __VA_ARGS__ }; static _TestInfo ti = { #SuiteName, TestDescription, _CONCAT(test_func_, __LINE__), &de, NULL }; _register_test(&ti); } static void _CONCAT(test_func_, __LINE__)(void)
 
 /*============================================================================*/
@@ -140,21 +165,119 @@ static void _register_test(_TestInfo* test_info) { if (g_test_registry_head == N
 /*============================================================================*/
 #define _ASSERT_GENERIC(condition, condition_str, expected_str, actual_str) do { if (!(condition)) { fprintf(stderr, "\n   %sTEST FAILED!%s\n", KRED, KNRM); fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", condition_str, __FILE__, __LINE__); if ((expected_str)[0]) fprintf(stderr, "   Expected: %s%s%s\n", KGRN, expected_str, KNRM); if ((actual_str)[0]) fprintf(stderr, "   Got: %s%s%s\n", KRED, actual_str, KNRM); exit(1); } } while (0)
 #define _ASSERT_GENERIC_PROP(condition, condition_str, help_text, actual_val_str) do { if (!(condition)) { fprintf(stderr, "\n   %sTEST FAILED!%s\n", KRED, KNRM); fprintf(stderr, "   Property failed: %s\n      At: %s:%d\n", condition_str, __FILE__, __LINE__); fprintf(stderr, "   Reason: %s%s%s\n", KGRN, help_text, KNRM); fprintf(stderr, "   Actual value: %s%s%s\n", KRED, actual_val_str, KNRM); exit(1); } } while (0)
+
+/**
+ * @brief Asserts that a condition is true.
+ *
+ * If the condition evaluates to false, the test fails immediately and prints an error message.
+ *
+ * @param condition The expression to evaluate.
+ */
 #define ASSERT(condition) _ASSERT_GENERIC(!!(condition), #condition, "true", (condition) ? "true" : "false")
+
+/**
+ * @brief Asserts that a condition is false.
+ *
+ * If the condition evaluates to true, the test fails immediately and prints an error message.
+ *
+ * @param condition The expression to evaluate.
+ */
 #define REFUTE(condition) _ASSERT_GENERIC(!(condition), #condition, "false", (condition) ? "true" : "false")
+
+/**
+ * @brief Asserts that two integer values are equal.
+ *
+ * If the values are not equal, the test fails and prints both the expected and actual values.
+ *
+ * @param expected The expected integer value.
+ * @param actual The actual integer value to check.
+ */
 #define EQUAL_INT(expected, actual) do { int e = (expected); int a = (actual); char e_buf[32], a_buf[32]; snprintf(e_buf, 32, "%d", e); snprintf(a_buf, 32, "%d", a); _ASSERT_GENERIC(e == a, #expected " == " #actual, e_buf, a_buf); } while (0)
+
+/**
+ * @brief Asserts that two character values are equal.
+ *
+ * If the characters are not equal, the test fails and prints both.
+ *
+ * @param expected The expected char value.
+ * @param actual The actual char value to check.
+ */
 #define EQUAL_CHAR(expected, actual) do { char e = (expected); char a = (actual); char e_buf[4] = {'\'', e, '\'', 0}, a_buf[4] = {'\'', a, '\'', 0}; _ASSERT_GENERIC(e == a, #expected " == " #actual, e_buf, a_buf); } while (0)
+
+/**
+ * @brief Asserts that two C-style strings are equal.
+ *
+ * Uses strcmp for comparison. The test fails if the strings are different, or if either pointer is NULL.
+ *
+ * @param expected The expected string value.
+ * @param actual The actual string value to check.
+ */
 #define EQUAL_STRING(expected, actual) do { const char* e = (expected); const char* a = (actual); _ASSERT_GENERIC(e && a && strcmp(e, a) == 0, #expected " == " #actual, e ? e : "NULL", a ? a : "NULL"); } while (0)
+
+/**
+ * @brief Asserts that two custom data types are equal using a provided comparison function.
+ *
+ * This allows for equality testing of complex structs or custom types.
+ *
+ * @param expected The expected value.
+ * @param actual The actual value.
+ * @param compare_fn A function pointer `int (*)(expected, actual)` that returns true if the items are equal.
+ * @param print_fn A function pointer `void (*)(char* buf, size_t size, val)` that prints the value into a buffer.
+ */
 #define EQUAL_BY(expected, actual, compare_fn, print_fn) do { __typeof__(expected) _exp = (expected); __typeof__(actual) _act = (actual); if (!compare_fn(_exp, _act)) { char _exp_str[1024] = {0}, _act_str[1024] = {0}; print_fn(_exp_str, sizeof(_exp_str), _exp); print_fn(_act_str, sizeof(_act_str), _act); _ASSERT_GENERIC(0, #compare_fn "(" #expected ", " #actual ")", _exp_str, _act_str); } } while (0)
+
+/**
+ * @brief Asserts that a value satisfies a given property (predicate).
+ *
+ * This is useful for property-based testing where you check for characteristics
+ * rather than a specific value.
+ *
+ * @param value The value to test.
+ * @param predicate_fn A function pointer `int (*)(value)` that returns true if the property holds.
+ * @param print_fn A function pointer `void (*)(char* buf, size_t size, val)` that prints the value.
+ * @param help_text A descriptive string explaining the property that was violated.
+ */
 #define PROPERTY(value, predicate_fn, print_fn, help_text) do { __typeof__(value) _val = (value); if (!predicate_fn(_val)) { char _val_str[1024] = {0}; print_fn(_val_str, sizeof(_val_str), _val); char _cond_str[1024]; snprintf(_cond_str, sizeof(_cond_str), "%s(%s)", #predicate_fn, #value); _ASSERT_GENERIC_PROP(0, _cond_str, help_text, _val_str); } } while(0)
+
 static void _robust_test_print_int(char* buf, size_t size, int val) { snprintf(buf, size, "%d", val); }
 static void _robust_test_print_char(char* buf, size_t size, char val) { snprintf(buf, size, "'%c'", val); }
 static void _robust_test_print_string(char* buf, size_t size, const char* val) { snprintf(buf, size, "\"%s\"", val); }
+
+/**
+ * @brief Asserts that an integer value satisfies a given property.
+ * @see PROPERTY
+ */
 #define PROPERTY_INT(value, predicate_fn, help_text) PROPERTY(value, predicate_fn, _robust_test_print_int, help_text)
+
+/**
+ * @brief Asserts that a character value satisfies a given property.
+ * @see PROPERTY
+ */
 #define PROPERTY_CHAR(value, predicate_fn, help_text) PROPERTY(value, predicate_fn, _robust_test_print_char, help_text)
+
+/**
+ * @brief Asserts that a string value satisfies a given property.
+ * @see PROPERTY
+ */
 #define PROPERTY_STRING(value, predicate_fn, help_text) PROPERTY(value, predicate_fn, _robust_test_print_string, help_text)
+
 #ifdef MEMORY_TRACKING_ENABLED
+/**
+ * @brief (Memory Tracking) Asserts that the total number of malloc/calloc/realloc calls matches the expected count.
+ *
+ * This macro is only available when the `MEMORY_TRACKING_ENABLED` flag is defined during compilation.
+ *
+ * @param expected The expected number of allocations.
+ */
 #define ASSERT_ALLOC_COUNT(expected) do { int e = (expected), a = _g_alloc_count; char e_buf[32], a_buf[32]; snprintf(e_buf, 32, "%d", e); snprintf(a_buf, 32, "%d", a); _ASSERT_GENERIC(e == a, "_g_alloc_count == " #expected, e_buf, a_buf); } while(0)
+
+/**
+ * @brief (Memory Tracking) Asserts that the total number of free calls matches the expected count.
+ *
+ * This macro is only available when the `MEMORY_TRACKING_ENABLED` flag is defined during compilation.
+ *
+ * @param expected The expected number of successful frees.
+ */
 #define ASSERT_FREE_COUNT(expected) do { int e = (expected), a = g_free_count; char e_buf[32], a_buf[32]; snprintf(e_buf, 32, "%d", e); snprintf(a_buf, 32, "%d", a); _ASSERT_GENERIC(e == a, "g_free_count == " #expected, e_buf, a_buf); } while(0)
 #endif
 
@@ -162,8 +285,18 @@ static void _robust_test_print_string(char* buf, size_t size, const char* val) {
 /* SECTION 6: THE RUN_ALL_TESTS IMPLEMENTATION (FULL VERSION)                 */
 /*============================================================================*/
 
-// Returns: 1 on pass, 2 on death test pass, 0 on fail, -1 on error
+// Internal function to run all tests. Use the RUN_ALL_TESTS() macro in your main function.
 int _run_all_tests_impl(int argc, char* argv[]);
+
+/**
+ * @brief Runs all registered test cases.
+ *
+ * This macro should be called from the `main` function of your test executable.
+ * It discovers and executes all tests defined with `TEST_CASE` and `TEST_DEATH_CASE`,
+ * summarizes the results, and returns an exit code.
+ *
+ * @return 0 if all tests pass, 1 otherwise.
+ */
 #define RUN_ALL_TESTS() _run_all_tests_impl(argc, argv)
 
 #ifdef _WIN32
