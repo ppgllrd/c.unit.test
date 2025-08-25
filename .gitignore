@@ -1,3 +1,12 @@
+# cmake temporary files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# build directory
+build/
+
 # Prerequisites
 *.d
 
