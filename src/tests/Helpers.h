@@ -13,7 +13,8 @@ struct Y {
   size_t s;    
 };
 
-struct Y* _n(int a[], size_t s);
-int _c(struct Y* y, struct Y* yy);
+struct Y* _n(int G[],size_t F);
+void _p(char*H, size_t I, struct Y*A);
+int _c(struct Y*F,struct Y*G);
 
 #endif // HELPERS_H

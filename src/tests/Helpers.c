@@ -11,12 +11,18 @@ struct Y* _n(int G[],size_t F) {
     *A=(struct Y){C,F};return A;
 }
 
-void _p(struct Y* y) {
-    struct X*x=y->x;
-    for(size_t i=0;i<y->s;i++) {
-        printf("%d ",(x=x->x,x->i));
-        fflush(stdout);
+void _p(char*H, size_t I, struct Y*A) {
+    struct X*B=A->x;
+    size_t C=0;
+    int n=snprintf(H+C, I-C, "CircularLinkedList(");
+    if(n<0||(size_t)n>=I-C)return;
+    C+=n;
+    for(size_t i=0;i<A->s;i++) {
+        n=snprintf(H+C, I-C, i==A->s-1?"%d": "%d,", (B=B->x,B->i));
+        if(n<0||(size_t)n>=I-C)break;
+        C+=n;
     }
+    n=snprintf(H+C, I-C, ")");
 }
 
 int _c(struct Y*F,struct Y*G) {

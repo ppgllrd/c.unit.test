@@ -401,6 +401,24 @@ static void _UT_register_test(_UT_TestInfo* test_info) { if (_UT_registry_head =
 #define EQUAL_POINTER(expected, actual) do { void* e = (void*)(expected); void* a = (void*)(actual); char e_buf[32], a_buf[32]; snprintf(e_buf, 32, "%p", e); snprintf(a_buf, 32, "%p", a); _UT_ASSERT_GENERIC(e == a, #expected " == " #actual, e_buf, a_buf); } while (0)
 
 /**
+ * @brief Asserts that a pointer value is NULL.
+ *
+ * If the pointer is not NULL, the test fails and prints the actual pointer address.
+ *
+ * @param actual The actual pointer value to check.
+ */
+#define EQUAL_NULL(actual) EQUAL_POINTER(NULL, (actual))
+
+/**
+ * @brief Asserts that a pointer value is not NULL.
+ *
+ * If the pointer is NULL, the test fails and prints a message.
+ *
+ * @param actual The actual pointer value to check.
+ */
+#define NON_EQUAL_NULL(actual) do { void* a = (void*)(actual); _UT_ASSERT_GENERIC(a != NULL, #actual " != NULL", "non-NULL pointer", "NULL"); } while (0)
+
+/**
  * @brief Asserts that two C-style strings are equal.
  *
  * Uses strcmp for comparison. The test fails if the strings are different, or if either pointer is NULL.

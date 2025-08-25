@@ -17,14 +17,19 @@ static bool _compare_test_lists(const struct CircularLinkedList* l1, const struc
     return _c((struct Y*)l1, (struct Y*)l2);
 }
 
+
+static void _print_test_list(char* buf, size_t size, struct CircularLinkedList* list) {
+    _p(buf, size, (struct Y*)list);
+}
+
 /*============================================================================*/
 /* TEST SUITE A: CircularLinkedList_new                                       */
 /*============================================================================*/
 TEST_CASE(New, "Creates a non-NULL list structure") {
     UT_disable_leak_check(); // This test doesn't test free().
     struct CircularLinkedList* list = CircularLinkedList_new();
-    ASSERT(list != NULL);
-    EQUAL_POINTER(list->p_last, NULL);
+    NON_EQUAL_NULL(list);
+    EQUAL_NULL(list->p_last);
     EQUAL_INT(list->size, 0);
 }
 TEST_CASE(New, "Allocates exactly one block and frees none") {
@@ -43,7 +48,7 @@ TEST_CASE(Insert, "Inserts into an empty list") {
     struct CircularLinkedList* expected = _create_test_list((int[]){10}, 1);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_insert(list, 10);
-    ASSERT(_compare_test_lists(list, expected));
+    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
     EQUAL_INT(allocs_before + 1, UT_alloc_count);
     EQUAL_INT(frees_before, UT_free_count);
 }
@@ -53,7 +58,7 @@ TEST_CASE(Insert, "Inserts smaller element at the beginning") {
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 10, 20, 30}, 4);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_insert(list, 5);
-    ASSERT(_compare_test_lists(list, expected));
+    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
     EQUAL_INT(allocs_before + 1, UT_alloc_count);
     EQUAL_INT(frees_before, UT_free_count);
 }
@@ -63,7 +68,7 @@ TEST_CASE(Insert, "Inserts larger element at the end") {
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 20, 30, 40}, 4);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_insert(list, 40);
-    ASSERT(_compare_test_lists(list, expected));
+    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
     EQUAL_INT(allocs_before + 1, UT_alloc_count);
     EQUAL_INT(frees_before, UT_free_count);
 }
@@ -73,7 +78,7 @@ TEST_CASE(Insert, "Inserts an element in the middle") {
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 20, 30, 40}, 4);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_insert(list, 30);
-    ASSERT(_compare_test_lists(list, expected));
+    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
     EQUAL_INT(allocs_before + 1, UT_alloc_count);
     EQUAL_INT(frees_before, UT_free_count);
 }
@@ -90,7 +95,7 @@ TEST_CASE(Remove, "Removes the only element") {
     struct CircularLinkedList* expected = _create_test_list(NULL, 0);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_remove(list, 0);
-    ASSERT(_compare_test_lists(list, expected));
+    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
     EQUAL_INT(allocs_before, UT_alloc_count);
     EQUAL_INT(frees_before + 1, UT_free_count);
 }
@@ -100,7 +105,7 @@ TEST_CASE(Remove, "Removes the first element") {
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 15}, 2);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_remove(list, 0);
-    ASSERT(_compare_test_lists(list, expected));
+    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
     EQUAL_INT(allocs_before, UT_alloc_count);
     EQUAL_INT(frees_before + 1, UT_free_count);
 }
@@ -110,7 +115,7 @@ TEST_CASE(Remove, "Removes the last element") {
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 10}, 2);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_remove(list, 2);
-    ASSERT(_compare_test_lists(list, expected));
+    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
     EQUAL_INT(allocs_before, UT_alloc_count);
     EQUAL_INT(frees_before + 1, UT_free_count);
 }
@@ -120,7 +125,7 @@ TEST_CASE(Remove, "Removes an element from the middle") {
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 15, 20}, 3);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_remove(list, 1);
-    ASSERT(_compare_test_lists(list, expected));
+    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
     EQUAL_INT(allocs_before, UT_alloc_count);
     EQUAL_INT(frees_before + 1, UT_free_count);
 }
@@ -166,14 +171,14 @@ TEST_CASE(Free, "Frees an empty list correctly") {
     struct CircularLinkedList* list = _create_test_list(NULL, 0);
     ASSERT_ALLOC_COUNT(1);
     CircularLinkedList_free(&list);
-    ASSERT(list == NULL);
+    EQUAL_NULL(list);
     ASSERT_FREE_COUNT(1);
 }
 TEST_CASE(Free, "Frees a single element list correctly") {
     struct CircularLinkedList* list = _create_test_list((int[]){100}, 1);
     ASSERT_ALLOC_COUNT(2); // 1 node was tracked + 1 struct
     CircularLinkedList_free(&list);
-    ASSERT(list == NULL);
+    EQUAL_NULL(list);
     // Student must free 1 node + 1 struct.
     ASSERT_FREE_COUNT(2); 
 }
@@ -182,7 +187,7 @@ TEST_CASE(Free, "Frees all memory for a multi element list") {
     struct CircularLinkedList* list = _create_test_list((int[]){10, 20, 5}, 3);
     ASSERT_ALLOC_COUNT(4); // 3 nodes were tracked + 1 struct
     CircularLinkedList_free(&list);
-    ASSERT(list == NULL);
+    EQUAL_NULL(list);
     // Student must free 3 nodes + 1 struct.
     ASSERT_FREE_COUNT(4); 
 }
