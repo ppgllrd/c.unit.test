@@ -554,6 +554,32 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
 #define ASSERT_FREE_COUNT(expected) do { int e = (expected), a = UT_free_count; char e_buf[32], a_buf[32]; snprintf(e_buf, 32, "%d", e); snprintf(a_buf, 32, "%d", a); _UT_ASSERT_GENERIC(e == a, "UT_free_count == " #expected, e_buf, a_buf); } while(0)
 #endif
 
+#ifdef _WIN32
+    /**
+     * @brief Defines a test case that is expected to fail with a standard C assertion.
+     *        This is a cross-platform macro that adapts to the OS's termination signal.
+     *
+     * On Windows, this expects an exit code of 3.
+     * On POSIX systems, this expects a SIGABRT signal.
+     *
+     * @param SuiteName The name of the test suite.
+     * @param TestDescription A descriptive name for the test case.
+     */
+    #define TEST_ASSERTION(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = 3)
+#else
+    /**
+     * @brief Defines a test case that is expected to fail with a standard C assertion.
+     *        This is a cross-platform macro that adapts to the OS's termination signal.
+     *
+     * On Windows, this expects an exit code of 3.
+     * On POSIX systems, this expects a SIGABRT signal.
+     *
+     * @param SuiteName The name of the test suite.
+     * @param TestDescription A descriptive name for the test case.
+     */
+    #define TEST_ASSERTION(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT)
+#endif
+
 /*============================================================================*/
 /* SECTION 6: STDOUT CAPTURE AND ASSERTIONS                                   */
 /*============================================================================*/

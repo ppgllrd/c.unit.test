@@ -22,8 +22,6 @@ static void __p(char* buf, size_t size, struct CircularLinkedList* list) {
     _p(buf, size, (struct Y*)list);
 }
 
-#define TEST_ASSERTION(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT)
-
 #define EQUAL_CIRCULAR_LINKED_LIST(list, expected) EQUAL_BY(list, expected, __c, __p)
 
 /*============================================================================*/
