@@ -6,7 +6,7 @@
 #include "Helpers.h"
 
 /*============================================================================*/
-/* TEST HELPERS                                                      */
+/* TEST HELPERS                                                               */
 /*============================================================================*/
 
 static struct CircularLinkedList* _create_test_list(const int values[], size_t count) {
@@ -16,7 +16,6 @@ static struct CircularLinkedList* _create_test_list(const int values[], size_t c
 static bool __c(const struct CircularLinkedList* l1, const struct CircularLinkedList* l2) {
     return _c((struct Y*)l1, (struct Y*)l2);
 }
-
 
 static void __p(char* buf, size_t size, struct CircularLinkedList* list) {
     _p(buf, size, (struct Y*)list);
@@ -28,14 +27,14 @@ static void __p(char* buf, size_t size, struct CircularLinkedList* list) {
 /* TEST SUITE A: CircularLinkedList_new                                       */
 /*============================================================================*/
 TEST_CASE(New, "Creates a non-NULL list structure") {
-    UT_disable_leak_check(); // This test doesn't test free().
+    UT_disable_leak_check();
     struct CircularLinkedList* list = CircularLinkedList_new();
     NON_EQUAL_NULL(list);
     EQUAL_NULL(list->p_last);
     EQUAL_INT(list->size, 0);
 }
 TEST_CASE(New, "Allocates exactly one block and frees none") {
-    UT_disable_leak_check(); // This test doesn't test free().
+    UT_disable_leak_check();
     CircularLinkedList_new();
     ASSERT_ALLOC_COUNT(1);
     ASSERT_FREE_COUNT(0);
@@ -48,41 +47,37 @@ TEST_CASE(Insert, "Inserts into an empty list") {
     UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list(NULL, 0);
     struct CircularLinkedList* expected = _create_test_list((int[]){10}, 1);
-    int allocs_before = UT_alloc_count, frees_before = UT_free_count;
-    CircularLinkedList_insert(list, 10);
+    ASSERT_MEMORY_CHANGES({
+        CircularLinkedList_insert(list, 10);
+    }, 1, 0);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
-    EQUAL_INT(allocs_before + 1, UT_alloc_count);
-    EQUAL_INT(frees_before, UT_free_count);
 }
 TEST_CASE(Insert, "Inserts smaller element at the beginning") {
     UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){10, 20, 30}, 3);
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 10, 20, 30}, 4);
-    int allocs_before = UT_alloc_count, frees_before = UT_free_count;
-    CircularLinkedList_insert(list, 5);
+    ASSERT_MEMORY_CHANGES({
+        CircularLinkedList_insert(list, 5);
+    }, 1, 0);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
-    EQUAL_INT(allocs_before + 1, UT_alloc_count);
-    EQUAL_INT(frees_before, UT_free_count);
 }
 TEST_CASE(Insert, "Inserts larger element at the end") {
     UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){10, 20, 30}, 3);
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 20, 30, 40}, 4);
-    int allocs_before = UT_alloc_count, frees_before = UT_free_count;
-    CircularLinkedList_insert(list, 40);
+    ASSERT_MEMORY_CHANGES({
+        CircularLinkedList_insert(list, 40);
+    }, 1, 0);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
-    EQUAL_INT(allocs_before + 1, UT_alloc_count);
-    EQUAL_INT(frees_before, UT_free_count);
 }
 TEST_CASE(Insert, "Inserts an element in the middle") {
     UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){10, 20, 40}, 3);
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 20, 30, 40}, 4);
-    int allocs_before = UT_alloc_count, frees_before = UT_free_count;
-    CircularLinkedList_insert(list, 30);
+    ASSERT_MEMORY_CHANGES({
+        CircularLinkedList_insert(list, 30);
+    }, 1, 0);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
-    EQUAL_INT(allocs_before + 1, UT_alloc_count);
-    EQUAL_INT(frees_before, UT_free_count);
 }
 TEST_ASSERTION(Insert, "Assertion fails on NULL p_list parameter") {
     CircularLinkedList_insert(NULL, 10);
@@ -95,41 +90,37 @@ TEST_CASE(Remove, "Removes the only element") {
     UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){42}, 1);
     struct CircularLinkedList* expected = _create_test_list(NULL, 0);
-    int allocs_before = UT_alloc_count, frees_before = UT_free_count;
-    CircularLinkedList_remove(list, 0);
+    ASSERT_MEMORY_CHANGES({
+        CircularLinkedList_remove(list, 0);
+    }, 0, 1);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
-    EQUAL_INT(allocs_before, UT_alloc_count);
-    EQUAL_INT(frees_before + 1, UT_free_count);
 }
 TEST_CASE(Remove, "Removes the first element") {
     UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){5, 10, 15}, 3);
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 15}, 2);
-    int allocs_before = UT_alloc_count, frees_before = UT_free_count;
-    CircularLinkedList_remove(list, 0);
+    ASSERT_MEMORY_CHANGES({
+        CircularLinkedList_remove(list, 0);
+    }, 0, 1);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
-    EQUAL_INT(allocs_before, UT_alloc_count);
-    EQUAL_INT(frees_before + 1, UT_free_count);
 }
 TEST_CASE(Remove, "Removes the last element") {
     UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){5, 10, 15}, 3);
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 10}, 2);
-    int allocs_before = UT_alloc_count, frees_before = UT_free_count;
-    CircularLinkedList_remove(list, 2);
+    ASSERT_MEMORY_CHANGES({
+        CircularLinkedList_remove(list, 2);
+    }, 0, 1);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
-    EQUAL_INT(allocs_before, UT_alloc_count);
-    EQUAL_INT(frees_before + 1, UT_free_count);
 }
 TEST_CASE(Remove, "Removes an element from the middle") {
     UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){5, 10, 15, 20}, 4);
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 15, 20}, 3);
-    int allocs_before = UT_alloc_count, frees_before = UT_free_count;
-    CircularLinkedList_remove(list, 1);
+    ASSERT_MEMORY_CHANGES({
+        CircularLinkedList_remove(list, 1);
+    }, 0, 1);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
-    EQUAL_INT(allocs_before, UT_alloc_count);
-    EQUAL_INT(frees_before + 1, UT_free_count);
 }
 TEST_ASSERTION(Remove, "Assertion fails with on out of bounds index") {
     struct CircularLinkedList* list = _create_test_list((int[]){5, 10, 15}, 3);
@@ -178,19 +169,16 @@ TEST_CASE(Free, "Frees an empty list correctly") {
 }
 TEST_CASE(Free, "Frees a single element list correctly") {
     struct CircularLinkedList* list = _create_test_list((int[]){100}, 1);
-    ASSERT_ALLOC_COUNT(2); // 1 node was tracked + 1 struct
+    ASSERT_ALLOC_COUNT(2);
     CircularLinkedList_free(&list);
     EQUAL_NULL(list);
-    // Student must free 1 node + 1 struct.
     ASSERT_FREE_COUNT(2); 
 }
 TEST_CASE(Free, "Frees all memory for a multi element list") {
-    // Leak check is ON by default for this suite
     struct CircularLinkedList* list = _create_test_list((int[]){10, 20, 5}, 3);
-    ASSERT_ALLOC_COUNT(4); // 3 nodes were tracked + 1 struct
+    ASSERT_ALLOC_COUNT(4);
     CircularLinkedList_free(&list);
     EQUAL_NULL(list);
-    // Student must free 3 nodes + 1 struct.
     ASSERT_FREE_COUNT(4); 
 }
 TEST_ASSERTION(Free, "Assertion fails on pointer to NULL pointer parameter") {

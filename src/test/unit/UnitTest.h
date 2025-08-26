@@ -651,6 +651,32 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
  */
 #define EQUAL_DOUBLE(expected, actual) NEAR_DOUBLE(expected, actual, UT_DEFAULT_DOUBLE_TOLERANCE)
 
+/**
+ * @brief (Memory Tracking) Asserts the exact number of allocations and frees that occur within a code block.
+ *
+ * This macro provides a clean way to verify the memory behavior of a specific function
+ * or piece of code without manual bookkeeping of counters. It is a direct replacement for
+ * manually snapshotting UT_alloc_count and UT_free_count.
+ *
+ * @param code_block The block of code to execute and monitor.
+ * @param expected_allocs The exact number of new allocations expected within the block.
+ * @param expected_frees The exact number of frees expected within the block.
+ */
+#define ASSERT_MEMORY_CHANGES(code_block, expected_allocs, expected_frees) do { \
+    int _allocs_before_ = UT_alloc_count; \
+    int _frees_before_ = UT_free_count; \
+    { code_block; } \
+    int _alloc_delta_ = UT_alloc_count - _allocs_before_; \
+    int _free_delta_ = UT_free_count - _frees_before_; \
+    char _a_exp_buf_[32], _a_act_buf_[32], _f_exp_buf_[32], _f_act_buf_[32]; \
+    snprintf(_a_exp_buf_, 32, "%d", (int)(expected_allocs)); \
+    snprintf(_a_act_buf_, 32, "%d", _alloc_delta_); \
+    snprintf(_f_exp_buf_, 32, "%d", (int)(expected_frees)); \
+    snprintf(_f_act_buf_, 32, "%d", _free_delta_); \
+    _UT_ASSERT_GENERIC(_alloc_delta_ == (expected_allocs), "Allocation count mismatch in code block", _a_exp_buf_, _a_act_buf_); \
+    _UT_ASSERT_GENERIC(_free_delta_ == (expected_frees), "Free count mismatch in code block", _f_exp_buf_, _f_act_buf_); \
+} while (0)
+
 /*============================================================================*/
 /* SECTION 6: STDOUT CAPTURE AND ASSERTIONS                                   */
 /*============================================================================*/
