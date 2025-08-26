@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stddef.h>
 #include <ctype.h> 
+#include <math.h>
 
 /*============================================================================*/
 /* SECTION 1: CORE DEFINITIONS & PLATFORM ABSTRACTION                         */
@@ -579,6 +580,76 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
      */
     #define TEST_ASSERTION(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT)
 #endif
+
+/*============================================================================*/
+/*            (Add this block to the end of SECTION 5)                        */
+/*============================================================================*/
+
+// Define default tolerances for float and double comparisons.
+#ifndef UT_DEFAULT_FLOAT_TOLERANCE
+#define UT_DEFAULT_FLOAT_TOLERANCE 1e-5f
+#endif
+
+#ifndef UT_DEFAULT_DOUBLE_TOLERANCE
+#define UT_DEFAULT_DOUBLE_TOLERANCE 1e-9
+#endif
+
+/**
+ * @brief Asserts that two float values are within a given tolerance of each other.
+ *
+ * Direct comparison of floating-point numbers is unreliable. This macro checks if
+ * the absolute difference between 'expected' and 'actual' is within the 'tolerance'.
+ *
+ * @param expected The expected float value.
+ * @param actual The actual float value.
+ * @param tolerance The maximum allowed difference.
+ */
+#define NEAR_FLOAT(expected, actual, tolerance) do { \
+    float e = (expected); \
+    float a = (actual); \
+    float t = (tolerance); \
+    if (fabsf(e - a) > t) { \
+        char e_buf[64], a_buf[64], cond_str[256]; \
+        snprintf(e_buf, sizeof(e_buf), "%f", e); \
+        snprintf(a_buf, sizeof(a_buf), "%f (difference: %e)", a, fabsf(e - a)); \
+        snprintf(cond_str, sizeof(cond_str), "fabsf(%s - %s) <= %s", #expected, #actual, #tolerance); \
+        _UT_ASSERT_GENERIC(0, cond_str, e_buf, a_buf); \
+    } \
+} while (0)
+
+/**
+ * @brief Asserts that two double values are within a given tolerance of each other.
+ *
+ * @param expected The expected double value.
+ * @param actual The actual double value.
+ * @param tolerance The maximum allowed difference.
+ */
+#define NEAR_DOUBLE(expected, actual, tolerance) do { \
+    double e = (expected); \
+    double a = (actual); \
+    double t = (tolerance); \
+    if (fabs(e - a) > t) { \
+        char e_buf[64], a_buf[64], cond_str[256]; \
+        snprintf(e_buf, sizeof(e_buf), "%lf", e); \
+        snprintf(a_buf, sizeof(a_buf), "%lf (difference: %e)", a, fabs(e - a)); \
+        snprintf(cond_str, sizeof(cond_str), "fabs(%s - %s) <= %s", #expected, #actual, #tolerance); \
+        _UT_ASSERT_GENERIC(0, cond_str, e_buf, a_buf); \
+    } \
+} while (0)
+
+/**
+ * @brief Asserts that two float values are nearly equal using a default tolerance.
+ * @see NEAR_FLOAT
+ * @see UT_DEFAULT_FLOAT_TOLERANCE
+ */
+#define EQUAL_FLOAT(expected, actual) NEAR_FLOAT(expected, actual, UT_DEFAULT_FLOAT_TOLERANCE)
+
+/**
+ * @brief Asserts that two double values are nearly equal using a default tolerance.
+ * @see NEAR_DOUBLE
+ * @see UT_DEFAULT_DOUBLE_TOLERANCE
+ */
+#define EQUAL_DOUBLE(expected, actual) NEAR_DOUBLE(expected, actual, UT_DEFAULT_DOUBLE_TOLERANCE)
 
 /*============================================================================*/
 /* SECTION 6: STDOUT CAPTURE AND ASSERTIONS                                   */
