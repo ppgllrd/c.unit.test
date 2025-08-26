@@ -36,7 +36,7 @@
 // Forward declarations
 typedef void (*_UT_TestFunction)(void);
 typedef struct _UT_TestInfo _UT_TestInfo;
-typedef struct { const char* expected_msg; int expected_signal; int expected_exit_code; } _UT_DeathExpect;
+typedef struct { const char* expected_msg; int expected_signal; int expected_exit_code; float min_similarity; } _UT_DeathExpect;
 
 struct _UT_TestInfo {
     const char* suite_name;
@@ -343,11 +343,70 @@ static void _UT_register_test(_UT_TestInfo* test_info) { if (_UT_registry_head =
  *        - .expected_signal: The signal number expected to terminate the process (POSIX-only).
  *        - .expected_exit_code: The exact exit code expected from the process.
  */
-#define TEST_DEATH_CASE(SuiteName, TestDescription, ...) static void _UT_CONCAT(test_func_, __LINE__)(void); _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__)) { static _UT_DeathExpect de = { .expected_msg = NULL, .expected_signal = 0, .expected_exit_code = -1, __VA_ARGS__ }; static _UT_TestInfo ti = { #SuiteName, TestDescription, _UT_CONCAT(test_func_, __LINE__), &de, NULL }; _UT_register_test(&ti); } static void _UT_CONCAT(test_func_, __LINE__)(void)
+#define TEST_DEATH_CASE(SuiteName, TestDescription, ...) static void _UT_CONCAT(test_func_, __LINE__)(void); _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__)) { static _UT_DeathExpect de = { .expected_msg = NULL, .expected_signal = 0, .expected_exit_code = -1, .min_similarity = 0.95f, __VA_ARGS__ }; static _UT_TestInfo ti = { #SuiteName, TestDescription, _UT_CONCAT(test_func_, __LINE__), &de, NULL }; _UT_register_test(&ti); } static void _UT_CONCAT(test_func_, __LINE__)(void)
 
 /*============================================================================*/
 /* SECTION 5: ASSERTION MACROS                                                */
 /*============================================================================*/
+
+static int _ut_min3(int a, int b, int c) {
+    if (a < b && a < c) return a;
+    if (b < a && b < c) return b;
+    return c;
+}
+
+/**
+ * @brief (Auxiliar function) Calculates the Levenshtein distance between two strings,
+ * ignoring case differences.
+ * This is a space-optimized implementation.
+ */
+static int _ut_levenshtein_distance(const char *s1, const char *s2) {
+    int s1len = strlen(s1);
+    int s2len = strlen(s2);
+
+    int *v0 = (int *)malloc((s2len + 1) * sizeof(int));
+    int *v1 = (int *)malloc((s2len + 1) * sizeof(int));
+
+    for (int i = 0; i <= s2len; i++) {
+        v0[i] = i;
+    }
+
+    for (int i = 0; i < s1len; i++) {
+        v1[0] = i + 1;
+        for (int j = 0; j < s2len; j++) {
+            // --- LA ÚNICA LÍNEA MODIFICADA ---
+            // Comparamos los caracteres en minúscula.
+            int cost = (tolower((unsigned char)s1[i]) == tolower((unsigned char)s2[j])) ? 0 : 1;
+            // ---------------------------------
+            
+            v1[j + 1] = _ut_min3(v1[j] + 1, v0[j + 1] + 1, v0[j] + cost);
+        }
+        for (int j = 0; j <= s2len; j++) {
+            v0[j] = v1[j];
+        }
+    }
+
+    int result = v1[s2len];
+    free(v0);
+    free(v1);
+    return result;
+}
+
+/**
+ * @brief  (Auxiliar function) Calculates a similarity ratio (0.0 to 1.0) based on the Levenshtein distance.
+ *
+ */
+static float _ut_calculate_similarity_ratio(const char *s1, const char *s2) {
+    int s1len = strlen(s1);
+    int s2len = strlen(s2);
+    if (s1len == 0 && s2len == 0) return 1.0f;
+
+    int max_len = (s1len > s2len) ? s1len : s2len;
+    int distance = _ut_levenshtein_distance(s1, s2);
+    
+    return 1.0f - ((float)distance / max_len);
+}
+
 #define _UT_ASSERT_GENERIC(condition, condition_str, expected_str, actual_str) do { if (!(condition)) { fprintf(stderr, "\n   %sTEST FAILED!%s\n", KRED, KNRM); fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", condition_str, __FILE__, __LINE__); if ((expected_str)[0]) fprintf(stderr, "   Expected: %s%s%s\n", KGRN, expected_str, KNRM); if ((actual_str)[0]) fprintf(stderr, "   Got: %s%s%s\n", KRED, actual_str, KNRM); exit(1); } } while (0)
 #define _UT_ASSERT_GENERIC_PROP(condition, condition_str, help_text, actual_val_str) do { if (!(condition)) { fprintf(stderr, "\n   %sTEST FAILED!%s\n", KRED, KNRM); fprintf(stderr, "   Property failed: %s\n      At: %s:%d\n", condition_str, __FILE__, __LINE__); fprintf(stderr, "   Reason: %s%s%s\n", KGRN, help_text, KNRM); fprintf(stderr, "   Actual value: %s%s%s\n", KRED, actual_val_str, KNRM); exit(1); } } while (0)
 
@@ -658,6 +717,9 @@ int _UT_UT_RUN_ALL_TESTS_impl(int argc, char* argv[]);
 #define UT_RUN_ALL_TESTS() _UT_UT_RUN_ALL_TESTS_impl(argc, argv)
 
 #ifdef _WIN32
+// ============================================================================
+// VERSION FOR WINDOWS
+// ============================================================================
 static int _UT_run_process_win(_UT_TestInfo* test, const char* executable_path, char* stderr_buffer) {
     char command_line[2048];
     snprintf(command_line, sizeof(command_line), "\"%s\" --run_test \"%s\" \"%s\"", executable_path, test->suite_name, test->test_name);
@@ -674,29 +736,78 @@ static int _UT_run_process_win(_UT_TestInfo* test, const char* executable_path, 
     CloseHandle(h_write);
     DWORD wait_result = WaitForSingleObject(pi.hProcess, UT_TEST_TIMEOUT_SECONDS * 1000);
     DWORD bytes_read = 0; ReadFile(h_read, stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE - 1, &bytes_read, NULL);
+    stderr_buffer[bytes_read] = '\0'; // Null-terminate the buffer
+
     if (wait_result == WAIT_TIMEOUT) {
         TerminateProcess(pi.hProcess, 1);
         snprintf(stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exceeded timeout of %d seconds.", KRED, KNRM, UT_TEST_TIMEOUT_SECONDS);
         return 0;
     }
+    
     DWORD exit_code; GetExitCodeProcess(pi.hProcess, &exit_code);
+    
     if (test->death_expect) {
         const _UT_DeathExpect* de = test->death_expect;
-        int msg_ok = !de->expected_msg || strstr(stderr_buffer, de->expected_msg);
-        int exit_ok = de->expected_exit_code == -1 || exit_code == (DWORD)de->expected_exit_code;
-        if (exit_code != 0 && msg_ok && exit_ok) return 2; // Death test pass
-        char temp_buffer[2048];
-        snprintf(temp_buffer, sizeof(temp_buffer), "\n   %sTEST FAILED!%s\n   Reason: Death test criteria not met (exit code 0x%X).", KRED, KNRM, (unsigned int)exit_code);
-        if (!msg_ok && de->expected_msg) { char msg_temp[512]; snprintf(msg_temp, sizeof(msg_temp), "\n   Expected message substring: \"%s\"", de->expected_msg); strcat(temp_buffer, msg_temp); }
-        if (bytes_read > 0) { strcat(temp_buffer, "\n   Got output:\n---\n"); strcat(temp_buffer, stderr_buffer); strcat(temp_buffer, "\n---\n"); }
-        strcpy(stderr_buffer, temp_buffer);
-        return 0;
+        int msg_ok = 1;
+        int exit_ok = 1;
+
+        float similarity = 0.0f;
+        if (de->expected_msg) {
+            similarity = _ut_calculate_similarity_ratio(de->expected_msg, stderr_buffer);
+            if (similarity < de->min_similarity) {
+                msg_ok = 0;
+            }
+        }
+        
+        if (de->expected_exit_code != -1 && exit_code != (DWORD)de->expected_exit_code) {
+            exit_ok = 0;
+        }
+
+        if (exit_code != 0 && msg_ok && exit_ok) {
+            return 2; // Death Test PASSED
+        } else {
+            // --- DETAILED ERROR MESSAGE CONSTRUCTION ---
+            char temp_buffer[2048];
+            char reason_buffer[1024] = {0};
+
+            if (exit_code == 0) {
+                strcat(reason_buffer, "\n   - Process finished successfully (exit code 0), but a failure was expected.");
+            }
+            if (!exit_ok) {
+                char part[256];
+                snprintf(part, sizeof(part), "\n   - Incorrect exit code. Expected: %d, Got: %lu",
+                         de->expected_exit_code, exit_code);
+                strcat(reason_buffer, part);
+            }
+            if (!msg_ok && de->expected_msg) {
+                char part[512];
+                snprintf(part, sizeof(part), "\n   - Message mismatch (Similarity: %.2f%%, Required minimum: %.2f%%).\n     Expected (approx): \"%s\"",
+                         similarity * 100.0f, de->min_similarity * 100.0f, de->expected_msg);
+                strcat(reason_buffer, part);
+            }
+
+            snprintf(temp_buffer, sizeof(temp_buffer), "\n   %sTEST FAILED!%s\n   Reason: Death test criteria not met.%s",
+                     KRED, KNRM, reason_buffer);
+
+            if (bytes_read > 0) {
+                strcat(temp_buffer, "\n   Got output:\n---\n");
+                strcat(temp_buffer, stderr_buffer);
+                strcat(temp_buffer, "\n---");
+            }
+            strcpy(stderr_buffer, temp_buffer);
+            return 0;
+        }
     }
+    
     if (exit_code == 0) return 1; // Normal pass
     if (strlen(stderr_buffer) == 0) { snprintf(stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exited with code 0x%X.", KRED, KNRM, (unsigned int)exit_code); }
     return 0;
 }
-#else
+
+#else // POSIX
+// ============================================================================
+// VERSION FOR POSIX (LINUX, MACOS)
+// ============================================================================
 static int _UT_wait_with_timeout(pid_t pid, int* status, int timeout_sec) { struct timespec start, now, sleep_ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 }; clock_gettime(CLOCK_MONOTONIC, &start); for (;;) { pid_t r = waitpid(pid, status, WNOHANG); if (r == pid) return 0; if (r == -1 && errno != EINTR) return -1; clock_gettime(CLOCK_MONOTONIC, &now); if ((now.tv_sec - start.tv_sec) >= timeout_sec) { kill(pid, SIGKILL); while (waitpid(pid, status, 0) == -1 && errno == EINTR); return 1; } nanosleep(&sleep_ts, NULL); } }
 static int _UT_run_process_posix(_UT_TestInfo* test, const char* executable_path, char* stderr_buffer) {
     int err_pipe[2] = {-1, -1};
@@ -713,23 +824,74 @@ static int _UT_run_process_posix(_UT_TestInfo* test, const char* executable_path
         ssize_t off = 0, bytes_read;
         int flags = fcntl(err_pipe[0], F_GETFL); fcntl(err_pipe[0], F_SETFL, flags | O_NONBLOCK);
         while ((bytes_read = read(err_pipe[0], stderr_buffer + off, UT_UT_SUITE_RESULTS_BUFFER_SIZE - 1 - off)) > 0) { off += bytes_read; }
+        stderr_buffer[off] = '\0'; // Null-terminate the buffer
         close(err_pipe[0]);
+
         if (r == 1) { snprintf(stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exceeded timeout of %d seconds.", KRED, KNRM, UT_TEST_TIMEOUT_SECONDS); return 0; }
         else if (r == -1) { perror("waitpid"); return -1; }
+
         if (test->death_expect) {
             const _UT_DeathExpect* de = test->death_expect;
             int sig_ok = 1, exit_ok = 1, msg_ok = 1;
-            if (WIFSIGNALED(status)) { if(de->expected_signal != 0 && WTERMSIG(status) != de->expected_signal) sig_ok = 0; }
-            else { if(de->expected_signal != 0) sig_ok = 0; }
-            if (WIFEXITED(status)) { if(de->expected_exit_code != -1 && WEXITSTATUS(status) != de->expected_exit_code) exit_ok = 0; }
-            else { if(de->expected_exit_code != -1) exit_ok = 0; }
-            if(de->expected_msg && !strstr(stderr_buffer, de->expected_msg)) msg_ok = 0;
-            if (sig_ok && exit_ok && msg_ok && (WIFSIGNALED(status) || WIFEXITED(status))) { return 2; }
-            else {
+            
+            int received_signal = -1;
+            int received_exit_code = -1;
+
+            if (WIFSIGNALED(status)) {
+                received_signal = WTERMSIG(status);
+                if (de->expected_signal != 0 && received_signal != de->expected_signal) sig_ok = 0;
+                if (de->expected_exit_code != -1) exit_ok = 0; // Expected exit code, not signal
+            } else if (WIFEXITED(status)) {
+                received_exit_code = WEXITSTATUS(status);
+                if (de->expected_exit_code != -1 && received_exit_code != de->expected_exit_code) exit_ok = 0;
+                if (de->expected_signal != 0) sig_ok = 0; // Expected signal, not exit code
+            } else {
+                sig_ok = 0; exit_ok = 0;
+            }
+
+            float similarity = 0.0f;
+            if (de->expected_msg) {
+                similarity = _ut_calculate_similarity_ratio(de->expected_msg, stderr_buffer);
+                if (similarity < de->min_similarity) {
+                    msg_ok = 0;
+                }
+            }
+
+            if (sig_ok && exit_ok && msg_ok && (WIFSIGNALED(status) || WIFEXITED(status))) {
+                return 2; // Death Test PASSED
+            } else {
+                // --- DETAILED ERROR MESSAGE CONSTRUCTION ---
                 char temp_buffer[2048];
-                snprintf(temp_buffer, sizeof(temp_buffer), "\n   %sTEST FAILED!%s\n   Reason: Death test criteria not met.", KRED, KNRM);
-                if (!msg_ok && de->expected_msg) { char msg_temp[512]; snprintf(msg_temp, sizeof(msg_temp), "\n   Expected message substring: \"%s\"", de->expected_msg); strcat(temp_buffer, msg_temp); }
-                if (off > 0) { strcat(temp_buffer, "\n   Got output:\n---\n"); strcat(temp_buffer, stderr_buffer); strcat(temp_buffer, "\n---"); }
+                char reason_buffer[1024] = {0};
+
+                if (!sig_ok) {
+                    char part[256];
+                    snprintf(part, sizeof(part), "\n   - Incorrect signal. Expected: %d (%s), Got: %d (%s)",
+                             de->expected_signal, strsignal(de->expected_signal),
+                             received_signal, received_signal != -1 ? strsignal(received_signal) : "N/A (terminated by exit code)");
+                    strcat(reason_buffer, part);
+                }
+                if (!exit_ok) {
+                    char part[256];
+                    snprintf(part, sizeof(part), "\n   - Incorrect exit code. Expected: %d, Got: %d",
+                             de->expected_exit_code, received_exit_code);
+                    strcat(reason_buffer, part);
+                }
+                if (!msg_ok && de->expected_msg) {
+                    char part[512];
+                    snprintf(part, sizeof(part), "\n   - Message mismatch (Similarity: %.2f%%, Required minimum: %.2f%%).\n     Expected (approx): \"%s\"",
+                             similarity * 100.0f, de->min_similarity * 100.0f, de->expected_msg);
+                    strcat(reason_buffer, part);
+                }
+
+                snprintf(temp_buffer, sizeof(temp_buffer), "\n   %sTEST FAILED!%s\n   Reason: Death test criteria not met.%s",
+                         KRED, KNRM, reason_buffer);
+                
+                if (off > 0) {
+                    strcat(temp_buffer, "\n   Got output:\n---\n");
+                    strcat(temp_buffer, stderr_buffer);
+                    strcat(temp_buffer, "\n---");
+                }
                 strcpy(stderr_buffer, temp_buffer);
                 return 0;
             }

@@ -13,14 +13,18 @@ static struct CircularLinkedList* _create_test_list(const int values[], size_t c
     return (struct CircularLinkedList*) _n((int*)values, count);
 }
 
-static bool _compare_test_lists(const struct CircularLinkedList* l1, const struct CircularLinkedList* l2) {
+static bool __c(const struct CircularLinkedList* l1, const struct CircularLinkedList* l2) {
     return _c((struct Y*)l1, (struct Y*)l2);
 }
 
 
-static void _print_test_list(char* buf, size_t size, struct CircularLinkedList* list) {
+static void __p(char* buf, size_t size, struct CircularLinkedList* list) {
     _p(buf, size, (struct Y*)list);
 }
+
+#define TEST_ASSERTION(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT)
+
+#define EQUAL_CIRCULAR_LINKED_LIST(list, expected) EQUAL_BY(list, expected, __c, __p)
 
 /*============================================================================*/
 /* TEST SUITE A: CircularLinkedList_new                                       */
@@ -48,7 +52,7 @@ TEST_CASE(Insert, "Inserts into an empty list") {
     struct CircularLinkedList* expected = _create_test_list((int[]){10}, 1);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_insert(list, 10);
-    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
+    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
     EQUAL_INT(allocs_before + 1, UT_alloc_count);
     EQUAL_INT(frees_before, UT_free_count);
 }
@@ -58,7 +62,7 @@ TEST_CASE(Insert, "Inserts smaller element at the beginning") {
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 10, 20, 30}, 4);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_insert(list, 5);
-    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
+    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
     EQUAL_INT(allocs_before + 1, UT_alloc_count);
     EQUAL_INT(frees_before, UT_free_count);
 }
@@ -68,7 +72,7 @@ TEST_CASE(Insert, "Inserts larger element at the end") {
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 20, 30, 40}, 4);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_insert(list, 40);
-    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
+    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
     EQUAL_INT(allocs_before + 1, UT_alloc_count);
     EQUAL_INT(frees_before, UT_free_count);
 }
@@ -78,11 +82,11 @@ TEST_CASE(Insert, "Inserts an element in the middle") {
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 20, 30, 40}, 4);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_insert(list, 30);
-    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
+    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
     EQUAL_INT(allocs_before + 1, UT_alloc_count);
     EQUAL_INT(frees_before, UT_free_count);
 }
-TEST_DEATH_CASE(Insert, "Assertion fails on NULL p_list parameter") {
+TEST_ASSERTION(Insert, "Assertion fails on NULL p_list parameter") {
     CircularLinkedList_insert(NULL, 10);
 }
 
@@ -95,7 +99,7 @@ TEST_CASE(Remove, "Removes the only element") {
     struct CircularLinkedList* expected = _create_test_list(NULL, 0);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_remove(list, 0);
-    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
+    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
     EQUAL_INT(allocs_before, UT_alloc_count);
     EQUAL_INT(frees_before + 1, UT_free_count);
 }
@@ -105,7 +109,7 @@ TEST_CASE(Remove, "Removes the first element") {
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 15}, 2);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_remove(list, 0);
-    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
+    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
     EQUAL_INT(allocs_before, UT_alloc_count);
     EQUAL_INT(frees_before + 1, UT_free_count);
 }
@@ -115,7 +119,7 @@ TEST_CASE(Remove, "Removes the last element") {
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 10}, 2);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_remove(list, 2);
-    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
+    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
     EQUAL_INT(allocs_before, UT_alloc_count);
     EQUAL_INT(frees_before + 1, UT_free_count);
 }
@@ -125,15 +129,15 @@ TEST_CASE(Remove, "Removes an element from the middle") {
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 15, 20}, 3);
     int allocs_before = UT_alloc_count, frees_before = UT_free_count;
     CircularLinkedList_remove(list, 1);
-    EQUAL_BY(list, expected, _compare_test_lists, _print_test_list);
+    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
     EQUAL_INT(allocs_before, UT_alloc_count);
     EQUAL_INT(frees_before + 1, UT_free_count);
 }
-TEST_DEATH_CASE(Remove, "Assertion fails with on out of bounds index") {
+TEST_ASSERTION(Remove, "Assertion fails with on out of bounds index") {
     struct CircularLinkedList* list = _create_test_list((int[]){5, 10, 15}, 3);
     CircularLinkedList_remove(list, 3);
 }
-TEST_DEATH_CASE(Remove, "Assertion fails on NULL p_list parameter") {
+TEST_ASSERTION(Remove, "Assertion fails on NULL p_list parameter") {
     CircularLinkedList_remove(NULL, 0);
 }
 
@@ -160,7 +164,7 @@ TEST_CASE(Print, "Prints a multi element list correctly") {
     struct CircularLinkedList* list = _create_test_list((int[]){10, 20, 30}, 3);
     ASSERT_STDOUT_EQUAL(CircularLinkedList_print(list), "10 20 30 \n");
 }
-TEST_DEATH_CASE(Print, "Assertion fails on NULL p_list parameter") {
+TEST_ASSERTION(Print, "Assertion fails on NULL p_list parameter") {
     CircularLinkedList_print(NULL);
 }
 
@@ -191,11 +195,11 @@ TEST_CASE(Free, "Frees all memory for a multi element list") {
     // Student must free 3 nodes + 1 struct.
     ASSERT_FREE_COUNT(4); 
 }
-TEST_DEATH_CASE(Free, "Assertion fails on pointer to NULL pointer parameter") {
+TEST_ASSERTION(Free, "Assertion fails on pointer to NULL pointer parameter") {
     struct CircularLinkedList* list = NULL;
     CircularLinkedList_free(&list);
 }
-TEST_DEATH_CASE(Free, "Assertion fails on NULL p_list parameter") {
+TEST_ASSERTION(Free, "Assertion fails on NULL p_list parameter") {
     CircularLinkedList_free(NULL);
 }
 
@@ -220,15 +224,15 @@ TEST_CASE(Equals, "Returns false when first list is longer") {
     struct CircularLinkedList* list2 = _create_test_list((int[]){10, 20}, 2);
     REFUTE(CircularLinkedList_equals(list1, list2));
 }
-TEST_DEATH_CASE(Equals, "Assertion fails when first list is NULL") {
+TEST_ASSERTION(Equals, "Assertion fails when first list is NULL") {
     struct CircularLinkedList* list2 = _create_test_list((int[]){10, 20}, 2);
     CircularLinkedList_equals(NULL, list2);
 }
-TEST_DEATH_CASE(Equals, "Assertion fails when second list is NULL") {
+TEST_ASSERTION(Equals, "Assertion fails when second list is NULL") {
     struct CircularLinkedList* list1 = _create_test_list((int[]){10, 20}, 2);
     CircularLinkedList_equals(list1, NULL);
 }
-TEST_DEATH_CASE(Equals, "Assertion fails when both lists are NULL") {
+TEST_ASSERTION(Equals, "Assertion fails when both lists are NULL") {
     CircularLinkedList_equals(NULL, NULL);
 }
 /*============================================================================*/
