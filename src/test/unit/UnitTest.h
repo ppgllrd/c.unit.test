@@ -697,13 +697,42 @@ static void _UT_normalize_string_for_comparison(char* str) {
     _UT_ASSERT_GENERIC(strcmp(expected_normalized, actual_normalized) == 0, condition_str, (expected_str), (_UT_stdout_capture_buffer)); \
 } while (0)
 
+/**
+ * @brief Asserts that a block of code prints a string that is "similar" to an expected string.
+ *
+ * This captures the stdout of the code block and calculates a similarity ratio
+ * (from 0.0 to 1.0) against the `expected_str` using the Levenshtein distance.
+ * The test fails if the calculated similarity is less than `min_similarity`.
+ * This is useful for testing output that may have minor, acceptable variations.
+ *
+ * @param code_block The C code to execute.
+ * @param expected_str The string to compare against.
+ * @param min_similarity The minimum acceptable similarity ratio (e.g., 0.9f for 90%).
+ */
+#define ASSERT_STDOUT_SIMILAR(code_block, expected_str, min_similarity) do { \
+    _UT_start_capture_stdout(); \
+    { code_block; } \
+    _UT_stop_capture_stdout(_UT_stdout_capture_buffer, sizeof(_UT_stdout_capture_buffer)); \
+    const char* e = (expected_str); \
+    float actual_similarity = _ut_calculate_similarity_ratio(e, _UT_stdout_capture_buffer); \
+    if (actual_similarity < (min_similarity)) { \
+        char expected_buf[256]; \
+        snprintf(expected_buf, sizeof(expected_buf), "A string with at least %.2f%% similarity to \"%s\"", (min_similarity) * 100.0f, e); \
+        char actual_buf[sizeof(_UT_stdout_capture_buffer) + 128]; \
+        snprintf(actual_buf, sizeof(actual_buf), "A string with %.2f%% similarity: \"%s\"", actual_similarity * 100.0f, _UT_stdout_capture_buffer); \
+        char condition_str[256]; \
+        snprintf(condition_str, sizeof(condition_str), "similarity(output_of(%s), \"%s\") >= %.2f", #code_block, #expected_str, (min_similarity)); \
+        _UT_ASSERT_GENERIC(0, condition_str, expected_buf, actual_buf); \
+    } \
+} while (0)
+
 #ifdef UNIT_TEST_IMPLEMENTATION
 /*============================================================================*/
 /* SECTION 7: THE UT_RUN_ALL_TESTS IMPLEMENTATION (FULL VERSION)                 */
 /*============================================================================*/
 
 // Internal function to run all tests. Use the UT_RUN_ALL_TESTS() macro in your main function.
-int _UT_UT_RUN_ALL_TESTS_impl(int argc, char* argv[]);
+int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]);
 
 /**
  * @brief Runs all registered test cases.
@@ -714,7 +743,7 @@ int _UT_UT_RUN_ALL_TESTS_impl(int argc, char* argv[]);
  *
  * @return 0 if all tests pass, 1 otherwise.
  */
-#define UT_RUN_ALL_TESTS() _UT_UT_RUN_ALL_TESTS_impl(argc, argv)
+#define UT_RUN_ALL_TESTS() _UT_RUN_ALL_TESTS_impl(argc, argv)
 
 #ifdef _WIN32
 // ============================================================================
@@ -929,7 +958,7 @@ static void _UT_finalize_suite(const char* name, int total, int failed, const ch
     _UT_suite_count++;
 }
 
-int _UT_UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
+int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
     if (argc == 4 && strcmp(argv[1], "--run_test") == 0) {
         _UT_TestInfo* current = _UT_registry_head;
         while (current) {
