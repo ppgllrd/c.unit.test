@@ -985,6 +985,7 @@ static void _UT_finalize_suite(const char* name, int total, int failed, const ch
 }
 
 int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
+    // Handle the internal --run_test flag for child processes
     if (argc == 4 && strcmp(argv[1], "--run_test") == 0) {
         _UT_TestInfo* current = _UT_registry_head;
         while (current) {
@@ -995,7 +996,6 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
                 #endif
                 current->func();
                  #ifdef UT_MEMORY_TRACKING_ENABLED
-                // Only check for leaks if it's enabled for this test.
                 if (_UT_leak_UT_check_enabled) {
                     _UT_check_for_leaks();
                 }
@@ -1006,6 +1006,16 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
         }
         fprintf(stderr, "Error: Test '%s.%s' not found in registry.\n", argv[2], argv[3]); return 1;
     }
+
+    // --- NEW: Parse for --suite filter flag ---
+    const char* suite_filter = NULL;
+    for (int i = 1; i < argc; ++i) {
+        if (strncmp(argv[i], "--suite=", 8) == 0) {
+            suite_filter = argv[i] + 8;
+            break; 
+        }
+    }
+
     _UT_is_ci_mode = 1; // argc > 1;
     int total = 0, passed = 0, failed = 0;
     int suite_total = 0, suite_failed = 0;
@@ -1015,32 +1025,37 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
     const char* executable_path = argv[0];
     _UT_init_colors();
     _UT_TestInfo* current_test = _UT_registry_head;
+
     while (current_test) {
-        if (strcmp(current_suite, current_test->suite_name) != 0) {
-            _UT_finalize_suite(current_suite, suite_total, suite_failed, suite_results);
-            current_suite = current_test->suite_name;
-            printf("%sTests for %s%s\n", KBLU, current_suite, KNRM);
-            for(int i=0; i < (int)(strlen(current_suite) + 10); ++i) printf("%s=%s", KBLU, KNRM);
-            suite_total = 0; suite_failed = 0; suite_results_idx = 0; 
-            for(int i=0; i<UT_SUITE_RESULTS_BUFFER_SIZE; i++) suite_results[i] = '\0';
+        // --- MODIFIED: Only run the test if it matches the suite filter (or if no filter is set) ---
+        if (!suite_filter || strcmp(current_test->suite_name, suite_filter) == 0) {
+            if (strcmp(current_suite, current_test->suite_name) != 0) {
+                _UT_finalize_suite(current_suite, suite_total, suite_failed, suite_results);
+                current_suite = current_test->suite_name;
+                printf("%sTests for %s%s\n", KBLU, current_suite, KNRM);
+                for(int i=0; i < (int)(strlen(current_suite) + 10); ++i) printf("%s=%s", KBLU, KNRM);
+                suite_total = 0; suite_failed = 0; suite_results_idx = 0; 
+                for(int i=0; i<UT_SUITE_RESULTS_BUFFER_SIZE; i++) suite_results[i] = '\0';
+            }
+            printf("\n%s: ", current_test->test_name);
+            fflush(stdout);
+            char stderr_buffer[UT_UT_SUITE_RESULTS_BUFFER_SIZE] = {0};
+            #ifdef _WIN32
+                int test_result = _UT_run_process_win(current_test, executable_path, stderr_buffer);
+            #else
+                int test_result = _UT_run_process_posix(current_test, executable_path, stderr_buffer);
+            #endif
+            if (test_result > 0) { // 1 for pass, 2 for death test pass
+                if (test_result == 2) { printf("\n   %sTEST PASSED SUCCESSFULLY!%s (Abnormal exit expected)", KGRN, KNRM); }
+                else { printf("\n   %sTEST PASSED SUCCESSFULLY!%s", KGRN, KNRM); }
+                passed++; if (suite_results_idx < UT_SUITE_RESULTS_BUFFER_SIZE - 1) suite_results[suite_results_idx++] = '+';
+            } else { // 0 for fail, -1 for error
+                failed++; suite_failed++; if (suite_results_idx < UT_SUITE_RESULTS_BUFFER_SIZE - 1) suite_results[suite_results_idx++] = '-';
+                printf("%s", stderr_buffer);
+            }
+            total++; suite_total++;
         }
-        printf("\n%s: ", current_test->test_name);
-        fflush(stdout);
-        char stderr_buffer[UT_UT_SUITE_RESULTS_BUFFER_SIZE] = {0};
-        #ifdef _WIN32
-            int test_result = _UT_run_process_win(current_test, executable_path, stderr_buffer);
-        #else
-            int test_result = _UT_run_process_posix(current_test, executable_path, stderr_buffer);
-        #endif
-        if (test_result > 0) { // 1 for pass, 2 for death test pass
-            if (test_result == 2) { printf("\n   %sTEST PASSED SUCCESSFULLY!%s (Abnormal exit expected)", KGRN, KNRM); }
-            else { printf("\n   %sTEST PASSED SUCCESSFULLY!%s", KGRN, KNRM); }
-            passed++; if (suite_results_idx < UT_SUITE_RESULTS_BUFFER_SIZE - 1) suite_results[suite_results_idx++] = '+';
-        } else { // 0 for fail, -1 for error
-            failed++; suite_failed++; if (suite_results_idx < UT_SUITE_RESULTS_BUFFER_SIZE - 1) suite_results[suite_results_idx++] = '-';
-            printf("%s", stderr_buffer);
-        }
-        total++; suite_total++; current_test = current_test->next;
+        current_test = current_test->next;
     }
     suite_results[suite_results_idx] = '\0';
     _UT_finalize_suite(current_suite, suite_total, suite_failed, suite_results);
