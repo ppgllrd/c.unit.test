@@ -95,6 +95,7 @@ typedef struct _UT_MemInfo {
     size_t size;
     const char* file;
     int line;
+    int is_baseline;
     struct _UT_MemInfo* next;
 } _UT_MemInfo;
 
@@ -158,6 +159,23 @@ static void UT_disable_memory_tracking(void) { _UT_mem_tracking_is_active = 0; }
  */
 static void UT_disable_leak_check(void) { _UT_leak_UT_check_enabled = 0; }
 
+/**
+ * @brief Marks all currently tracked memory blocks as 'baseline'.
+ *
+ * This function iterates through all allocations currently known to the memory
+ * tracker and flags them. These flagged blocks will be ignored by the end-of-test
+ * memory leak check. However, they remain tracked, allowing functions under test
+ * to legally free them.
+ */
+static void UT_mark_memory_as_baseline(void) {
+    if (!_UT_mem_tracking_enabled) return;
+    _UT_MemInfo* current = _UT_mem_head;
+    while (current != NULL) {
+        current->is_baseline = 1;
+        current = current->next;
+    }
+}
+
 // Resets the memory tracking state for a new test run.
 static void _UT_init_memory_tracking(void) {
     while (_UT_mem_head != NULL) {
@@ -175,14 +193,24 @@ static void _UT_init_memory_tracking(void) {
 // Checks for memory leaks at the end of a test and exits if any are found.
 static void _UT_check_for_leaks(void) {
     _UT_mem_tracking_enabled = 0; // Disable tracking during check.
-    if (_UT_mem_head != NULL) {
-        fprintf(stderr, "\n   %sTEST FAILED!%s\n", KRED, KNRM);
-        fprintf(stderr, "   Reason: Memory leak detected.\n");
-        _UT_MemInfo* current = _UT_mem_head;
-        while (current != NULL) {
+    _UT_MemInfo* current = _UT_mem_head;
+    int leaks_found = 0;
+
+    while (current != NULL) {
+        // The crucial change: only report a leak if it's NOT a baseline allocation.
+        if (current->is_baseline == 0) {
+            if (!leaks_found) {
+                // Print the header only once, and only if we actually find a real leak.
+                fprintf(stderr, "\n   %sTEST FAILED!%s\n", KRED, KNRM);
+                fprintf(stderr, "   Reason: Memory leak detected.\n");
+                leaks_found = 1;
+            }
             fprintf(stderr, "      - %zu bytes allocated at %s:%d\n", current->size, current->file, current->line);
-            current = current->next;
         }
+        current = current->next;
+    }
+
+    if (leaks_found) {
         exit(1);
     }
 }
@@ -201,6 +229,7 @@ static void* _UT_malloc(size_t size, const char* file, int line) {
         _UT_mem_tracking_is_active = 1;
         if (info) {
             info->address = ptr; info->size = size; info->file = file; info->line = line;
+            info->is_baseline = 0;
             info->next = _UT_mem_head; _UT_mem_head = info; UT_alloc_count++;
         }
     }
@@ -221,6 +250,7 @@ static void* _UT_calloc(size_t num, size_t size, const char* file, int line) {
         _UT_mem_tracking_is_active = 1;
         if (info) {
             info->address = ptr; info->size = num * size; info->file = file; info->line = line;
+            info->is_baseline = 0;
             info->next = _UT_mem_head; _UT_mem_head = info; UT_alloc_count++;
         }
     }
@@ -581,10 +611,6 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
     #define TEST_ASSERTION(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT)
 #endif
 
-/*============================================================================*/
-/*            (Add this block to the end of SECTION 5)                        */
-/*============================================================================*/
-
 // Define default tolerances for float and double comparisons.
 #ifndef UT_DEFAULT_FLOAT_TOLERANCE
 #define UT_DEFAULT_FLOAT_TOLERANCE 1e-5f
@@ -675,6 +701,42 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
     snprintf(_f_act_buf_, 32, "%d", _free_delta_); \
     _UT_ASSERT_GENERIC(_alloc_delta_ == (expected_allocs), "Allocation count mismatch in code block", _a_exp_buf_, _a_act_buf_); \
     _UT_ASSERT_GENERIC(_free_delta_ == (expected_frees), "Free count mismatch in code block", _f_exp_buf_, _f_act_buf_); \
+} while (0)
+
+/**
+ * @brief (Memory Tracking) Asserts memory changes and marks new allocations as baseline.
+ *
+ * This macro performs the same checks as ASSERT_MEMORY_CHANGES but adds a crucial
+ * final step: it flags any new allocations that occurred within the block as 'baseline'.
+ * This effectively incorporates the newly allocated memory into the test's setup,
+ * ensuring the end-of-test leak checker will not report it as a leak. This is ideal
+ * for testing functions like 'insert' or 'add' where the newly created memory is
+ * intentionally not freed within the test's scope.
+ *
+ * @param code_block The block of code to execute and monitor.
+ * @param expected_allocs The exact number of new allocations expected within the block.
+ * @param expected_frees The exact number of frees expected within the block.
+ */
+#define ASSERT_AND_MARK_MEMORY_CHANGES(code_block, expected_allocs, expected_frees) do { \
+    int _allocs_before_ = UT_alloc_count; \
+    int _frees_before_ = UT_free_count; \
+    { code_block; } \
+    int _alloc_delta_ = UT_alloc_count - _allocs_before_; \
+    int _free_delta_ = UT_free_count - _frees_before_; \
+    char _a_exp_buf_[32], _a_act_buf_[32], _f_exp_buf_[32], _f_act_buf_[32]; \
+    snprintf(_a_exp_buf_, 32, "%d", (int)(expected_allocs)); \
+    snprintf(_a_act_buf_, 32, "%d", _alloc_delta_); \
+    snprintf(_f_exp_buf_, 32, "%d", (int)(expected_frees)); \
+    snprintf(_f_act_buf_, 32, "%d", _free_delta_); \
+    _UT_ASSERT_GENERIC(_alloc_delta_ == (expected_allocs), "Allocation count mismatch in code block", _a_exp_buf_, _a_act_buf_); \
+    _UT_ASSERT_GENERIC(_free_delta_ == (expected_frees), "Free count mismatch in code block", _f_exp_buf_, _f_act_buf_); \
+    _UT_MemInfo* current = _UT_mem_head; \
+    for (int i = 0; i < _alloc_delta_ && current != NULL; ++i) { \
+        if (current->is_baseline == 0) { \
+            current->is_baseline = 1; \
+        } \
+        current = current->next; \
+    } \
 } while (0)
 
 /*============================================================================*/

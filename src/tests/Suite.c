@@ -17,6 +17,7 @@ static bool __c(const struct CircularLinkedList* l1, const struct CircularLinked
     return _c((struct Y*)l1, (struct Y*)l2);
 }
 
+
 static void __p(char* buf, size_t size, struct CircularLinkedList* list) {
     _p(buf, size, (struct Y*)list);
 }
@@ -44,37 +45,37 @@ TEST_CASE(New, "Allocates exactly one block and frees none") {
 /* TEST SUITE B: CircularLinkedList_insert                                    */
 /*============================================================================*/
 TEST_CASE(Insert, "Inserts into an empty list") {
-    UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list(NULL, 0);
     struct CircularLinkedList* expected = _create_test_list((int[]){10}, 1);
-    ASSERT_MEMORY_CHANGES({
+    UT_mark_memory_as_baseline();
+    ASSERT_AND_MARK_MEMORY_CHANGES({
         CircularLinkedList_insert(list, 10);
     }, 1, 0);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
 }
 TEST_CASE(Insert, "Inserts smaller element at the beginning") {
-    UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){10, 20, 30}, 3);
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 10, 20, 30}, 4);
-    ASSERT_MEMORY_CHANGES({
+    UT_mark_memory_as_baseline();
+    ASSERT_AND_MARK_MEMORY_CHANGES({
         CircularLinkedList_insert(list, 5);
     }, 1, 0);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
 }
 TEST_CASE(Insert, "Inserts larger element at the end") {
-    UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){10, 20, 30}, 3);
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 20, 30, 40}, 4);
-    ASSERT_MEMORY_CHANGES({
+    UT_mark_memory_as_baseline();
+    ASSERT_AND_MARK_MEMORY_CHANGES({
         CircularLinkedList_insert(list, 40);
     }, 1, 0);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
 }
 TEST_CASE(Insert, "Inserts an element in the middle") {
-    UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){10, 20, 40}, 3);
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 20, 30, 40}, 4);
-    ASSERT_MEMORY_CHANGES({
+    UT_mark_memory_as_baseline();
+    ASSERT_AND_MARK_MEMORY_CHANGES({
         CircularLinkedList_insert(list, 30);
     }, 1, 0);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
@@ -87,36 +88,36 @@ TEST_ASSERTION(Insert, "Assertion fails on NULL p_list parameter") {
 /* TEST SUITE C: CircularLinkedList_remove                                    */
 /*============================================================================*/
 TEST_CASE(Remove, "Removes the only element") {
-    UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){42}, 1);
     struct CircularLinkedList* expected = _create_test_list(NULL, 0);
+    UT_mark_memory_as_baseline();
     ASSERT_MEMORY_CHANGES({
         CircularLinkedList_remove(list, 0);
     }, 0, 1);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
 }
 TEST_CASE(Remove, "Removes the first element") {
-    UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){5, 10, 15}, 3);
     struct CircularLinkedList* expected = _create_test_list((int[]){10, 15}, 2);
+    UT_mark_memory_as_baseline();
     ASSERT_MEMORY_CHANGES({
         CircularLinkedList_remove(list, 0);
     }, 0, 1);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
 }
 TEST_CASE(Remove, "Removes the last element") {
-    UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){5, 10, 15}, 3);
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 10}, 2);
+    UT_mark_memory_as_baseline();
     ASSERT_MEMORY_CHANGES({
         CircularLinkedList_remove(list, 2);
     }, 0, 1);
     EQUAL_CIRCULAR_LINKED_LIST(list, expected);
 }
 TEST_CASE(Remove, "Removes an element from the middle") {
-    UT_disable_leak_check();
     struct CircularLinkedList* list = _create_test_list((int[]){5, 10, 15, 20}, 4);
     struct CircularLinkedList* expected = _create_test_list((int[]){5, 15, 20}, 3);
+    UT_mark_memory_as_baseline();
     ASSERT_MEMORY_CHANGES({
         CircularLinkedList_remove(list, 1);
     }, 0, 1);
@@ -124,6 +125,7 @@ TEST_CASE(Remove, "Removes an element from the middle") {
 }
 TEST_ASSERTION(Remove, "Assertion fails with on out of bounds index") {
     struct CircularLinkedList* list = _create_test_list((int[]){5, 10, 15}, 3);
+    UT_mark_memory_as_baseline();
     CircularLinkedList_remove(list, 3);
 }
 TEST_ASSERTION(Remove, "Assertion fails on NULL p_list parameter") {
