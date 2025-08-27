@@ -1,3 +1,8 @@
+/*============================================================================*/
+/* Unit Test Framework                                                        */
+/* Pepe Gallardo, 2025                                                        */
+/*============================================================================*/
+
 #ifndef UNIT_TEST_H
 #define UNIT_TEST_H
 
@@ -7,6 +12,13 @@
 #include <stddef.h>
 #include <ctype.h> 
 #include <math.h>
+
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
 
 /*============================================================================*/
 /* SECTION 1: CORE DEFINITIONS & PLATFORM ABSTRACTION                         */
@@ -30,9 +42,9 @@
     #define UT_TEST_TIMEOUT_SECONDS 2
 #endif
 
-#define UT_UT_SUITE_RESULTS_BUFFER_SIZE 4096
-#define UT_SUITE_RESULTS_BUFFER_SIZE 1024
-#define UT_MAX_SUITES 128
+#define _UT_STDERR_BUFFER_SIZE 4096
+#define _UT_SUITE_RESULTS_DETAILS_SIZE 1024
+#define _UT_MAX_SUITES 128
 
 // Forward declarations
 typedef void (*_UT_TestFunction)(void);
@@ -56,8 +68,8 @@ static _UT_TestInfo* g_UT_registry_tail = NULL;
 static int _UT_use_color = 1;
 static int _UT_is_ci_mode = 0;
 
-typedef struct { int passed; int total; char details[UT_SUITE_RESULTS_BUFFER_SIZE]; } _UT_SuiteResult;
-static _UT_SuiteResult _UT_all_suite_results[UT_MAX_SUITES];
+typedef struct { int passed; int total; char details[_UT_SUITE_RESULTS_DETAILS_SIZE]; } _UT_SuiteResult;
+static _UT_SuiteResult _UT_all_suite_results[_UT_MAX_SUITES];
 static int _UT_suite_count = 0;
 
 #define KNRM (_UT_use_color ? "\x1B[0m" : "")
@@ -109,6 +121,7 @@ extern int _UT_mem_tracking_is_active;
 extern int _UT_leak_UT_check_enabled;
 
 #ifdef UNIT_TEST_IMPLEMENTATION
+
 // Actual definitions of the global variables. This code will only be
 // compiled into the single .c file that defines UNIT_TEST_IMPLEMENTATION.
 _UT_MemInfo* _UT_mem_head = NULL;
@@ -405,11 +418,7 @@ static int _ut_levenshtein_distance(const char *s1, const char *s2) {
     for (int i = 0; i < s1len; i++) {
         v1[0] = i + 1;
         for (int j = 0; j < s2len; j++) {
-            // --- LA ÚNICA LÍNEA MODIFICADA ---
-            // Comparamos los caracteres en minúscula.
             int cost = (tolower((unsigned char)s1[i]) == tolower((unsigned char)s2[j])) ? 0 : 1;
-            // ---------------------------------
-            
             v1[j + 1] = _ut_min3(v1[j] + 1, v0[j + 1] + 1, v0[j] + cost);
         }
         for (int j = 0; j <= s2len; j++) {
@@ -939,22 +948,22 @@ static int _UT_run_process_win(_UT_TestInfo* test, const char* executable_path, 
     snprintf(command_line, sizeof(command_line), "\"%s\" --run_test \"%s\" \"%s\"", executable_path, test->suite_name, test->test_name);
     HANDLE h_read = NULL, h_write = NULL;
     SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-    if (!CreatePipe(&h_read, &h_write, &sa, 0)) { snprintf(stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE, "CreatePipe failed."); return -1; }
+    if (!CreatePipe(&h_read, &h_write, &sa, 0)) { snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "CreatePipe failed."); return -1; }
     STARTUPINFOA si; ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si);
     si.hStdError = h_write; si.hStdOutput = h_write; si.dwFlags |= STARTF_USESTDHANDLES;
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     if (!CreateProcessA(NULL, command_line, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-        snprintf(stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: CreateProcess failed (error %lu).", KRED, KNRM, GetLastError());
+        snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: CreateProcess failed (error %lu).", KRED, KNRM, GetLastError());
         CloseHandle(h_read); CloseHandle(h_write); return 0;
     }
     CloseHandle(h_write);
     DWORD wait_result = WaitForSingleObject(pi.hProcess, UT_TEST_TIMEOUT_SECONDS * 1000);
-    DWORD bytes_read = 0; ReadFile(h_read, stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE - 1, &bytes_read, NULL);
+    DWORD bytes_read = 0; ReadFile(h_read, stderr_buffer, _UT_STDERR_BUFFER_SIZE - 1, &bytes_read, NULL);
     stderr_buffer[bytes_read] = '\0'; // Null-terminate the buffer
 
     if (wait_result == WAIT_TIMEOUT) {
         TerminateProcess(pi.hProcess, 1);
-        snprintf(stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exceeded timeout of %d seconds.", KRED, KNRM, UT_TEST_TIMEOUT_SECONDS);
+        snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exceeded timeout of %d seconds.", KRED, KNRM, UT_TEST_TIMEOUT_SECONDS);
         return 0;
     }
     
@@ -1014,7 +1023,7 @@ static int _UT_run_process_win(_UT_TestInfo* test, const char* executable_path, 
     }
     
     if (exit_code == 0) return 1; // Normal pass
-    if (strlen(stderr_buffer) == 0) { snprintf(stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exited with code 0x%X.", KRED, KNRM, (unsigned int)exit_code); }
+    if (strlen(stderr_buffer) == 0) { snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exited with code 0x%X.", KRED, KNRM, (unsigned int)exit_code); }
     return 0;
 }
 
@@ -1037,11 +1046,11 @@ static int _UT_run_process_posix(_UT_TestInfo* test, const char* executable_path
         close(err_pipe[1]); int status; int r = _UT_wait_with_timeout(pid, &status, UT_TEST_TIMEOUT_SECONDS);
         ssize_t off = 0, bytes_read;
         int flags = fcntl(err_pipe[0], F_GETFL); fcntl(err_pipe[0], F_SETFL, flags | O_NONBLOCK);
-        while ((bytes_read = read(err_pipe[0], stderr_buffer + off, UT_UT_SUITE_RESULTS_BUFFER_SIZE - 1 - off)) > 0) { off += bytes_read; }
+        while ((bytes_read = read(err_pipe[0], stderr_buffer + off, _UT_STDERR_BUFFER_SIZE - 1 - off)) > 0) { off += bytes_read; }
         stderr_buffer[off] = '\0'; // Null-terminate the buffer
         close(err_pipe[0]);
 
-        if (r == 1) { snprintf(stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exceeded timeout of %d seconds.", KRED, KNRM, UT_TEST_TIMEOUT_SECONDS); return 0; }
+        if (r == 1) { snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exceeded timeout of %d seconds.", KRED, KNRM, UT_TEST_TIMEOUT_SECONDS); return 0; }
         else if (r == -1) { perror("waitpid"); return -1; }
 
         if (test->death_expect) {
@@ -1112,8 +1121,8 @@ static int _UT_run_process_posix(_UT_TestInfo* test, const char* executable_path
         }
         if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return 1;
         if (strlen(stderr_buffer) == 0) {
-            if (WIFSIGNALED(status)) { snprintf(stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Terminated by signal: %s.", KRED, KNRM, strsignal(WTERMSIG(status))); }
-            else { snprintf(stderr_buffer, UT_UT_SUITE_RESULTS_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exited with code %d.", KRED, KNRM, WEXITSTATUS(status)); }
+            if (WIFSIGNALED(status)) { snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Terminated by signal: %s.", KRED, KNRM, strsignal(WTERMSIG(status))); }
+            else { snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exited with code %d.", KRED, KNRM, WEXITSTATUS(status)); }
         }
         return 0;
     }
@@ -1134,11 +1143,11 @@ static void _UT_finalize_suite(const char* name, int total, int failed, const ch
     printf("\n\n%sPassed%s: %s%d%s, %sFailed%s: %s%d%s, Total: %d, ", KGRN, KNRM, KGRN, total - failed, KNRM, KRED, KNRM, KRED, failed, KNRM, total);
     _UT_print_colored_details(details);
     printf("\n\n");
-    if (_UT_suite_count < UT_MAX_SUITES) {
+    if (_UT_suite_count < _UT_MAX_SUITES) {
         _UT_all_suite_results[_UT_suite_count].passed = total - failed;
         _UT_all_suite_results[_UT_suite_count].total = total;
-        strncpy(_UT_all_suite_results[_UT_suite_count].details, details, UT_SUITE_RESULTS_BUFFER_SIZE -1);
-        _UT_all_suite_results[_UT_suite_count].details[UT_SUITE_RESULTS_BUFFER_SIZE -1] = '\0';
+        strncpy(_UT_all_suite_results[_UT_suite_count].details, details, _UT_SUITE_RESULTS_DETAILS_SIZE -1);
+        _UT_all_suite_results[_UT_suite_count].details[_UT_SUITE_RESULTS_DETAILS_SIZE -1] = '\0';
     }
     _UT_suite_count++;
 }
@@ -1178,7 +1187,7 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
     _UT_is_ci_mode = 1; // argc > 1;
     int total = 0, passed = 0, failed = 0;
     int suite_total = 0, suite_failed = 0;
-    char suite_results[UT_SUITE_RESULTS_BUFFER_SIZE];
+    char suite_results[_UT_SUITE_RESULTS_DETAILS_SIZE];
     int suite_results_idx = 0;
     const char* current_suite = "";
     const char* executable_path = argv[0];
@@ -1194,11 +1203,11 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
                 printf("%sTests for %s%s\n", KBLU, current_suite, KNRM);
                 for(int i=0; i < (int)(strlen(current_suite) + 10); ++i) printf("%s=%s", KBLU, KNRM);
                 suite_total = 0; suite_failed = 0; suite_results_idx = 0; 
-                for(int i=0; i<UT_SUITE_RESULTS_BUFFER_SIZE; i++) suite_results[i] = '\0';
+                for(int i=0; i<_UT_SUITE_RESULTS_DETAILS_SIZE; i++) suite_results[i] = '\0';
             }
             printf("\n%s: ", current_test->test_name);
             fflush(stdout);
-            char stderr_buffer[UT_UT_SUITE_RESULTS_BUFFER_SIZE] = {0};
+            char stderr_buffer[_UT_STDERR_BUFFER_SIZE] = {0};
             #ifdef _WIN32
                 int test_result = _UT_run_process_win(current_test, executable_path, stderr_buffer);
             #else
@@ -1207,9 +1216,9 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
             if (test_result > 0) { // 1 for pass, 2 for death test pass
                 if (test_result == 2) { printf("\n   %sTEST PASSED SUCCESSFULLY!%s (Abnormal exit expected)", KGRN, KNRM); }
                 else { printf("\n   %sTEST PASSED SUCCESSFULLY!%s", KGRN, KNRM); }
-                passed++; if (suite_results_idx < UT_SUITE_RESULTS_BUFFER_SIZE - 1) suite_results[suite_results_idx++] = '+';
+                passed++; if (suite_results_idx < _UT_SUITE_RESULTS_DETAILS_SIZE - 1) suite_results[suite_results_idx++] = '+';
             } else { // 0 for fail, -1 for error
-                failed++; suite_failed++; if (suite_results_idx < UT_SUITE_RESULTS_BUFFER_SIZE - 1) suite_results[suite_results_idx++] = '-';
+                failed++; suite_failed++; if (suite_results_idx < _UT_SUITE_RESULTS_DETAILS_SIZE - 1) suite_results[suite_results_idx++] = '-';
                 printf("%s", stderr_buffer);
             }
             total++; suite_total++;
@@ -1242,5 +1251,9 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
     return failed > 0 ? 1 : 0;
 }
 #endif // UNIT_TEST_IMPLEMENTATION
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 #endif // UNIT_TEST_H

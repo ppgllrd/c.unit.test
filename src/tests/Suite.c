@@ -1,9 +1,17 @@
-// suite.c 
+/*============================================================================*/
+/* Test Suites for CircularLinkedList                                         */
+/* Pepe Gallardo, 2025                                                        */
+/*============================================================================*/
 
 #define UNIT_TEST_IMPLEMENTATION
 #include "test/unit/UnitTest.h"
 #include "CircularLinkedList.h"
 #include "Helpers.h"
+
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverride-init"
+#endif
 
 /*============================================================================*/
 /* TEST HELPERS                                                               */
@@ -229,3 +237,7 @@ TEST_ASSERTION(Equals, "Assertion fails when both lists are NULL") {
 int main(int argc, char* argv[]) {
     return UT_RUN_ALL_TESTS();
 }
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif

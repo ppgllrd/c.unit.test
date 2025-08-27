@@ -1,3 +1,8 @@
+/*============================================================================*/
+/* Helper functions for CircularLinkedList                                    */
+/* Pepe Gallardo, 2025                                                        */
+/*============================================================================*/
+
 #include "test/unit/UnitTest.h"
 #include "Helpers.h"
 
