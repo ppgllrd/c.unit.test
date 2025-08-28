@@ -21,7 +21,7 @@ static struct CircularLinkedList* _create_test_list(const int values[], size_t c
     return (struct CircularLinkedList*) _n((int*)values, count);
 }
 
-static bool __c(const struct CircularLinkedList* l1, const struct CircularLinkedList* l2) {
+static bool _equalLists(const struct CircularLinkedList* l1, const struct CircularLinkedList* l2) {
     return _c((struct Y*)l1, (struct Y*)l2);
 }
 
@@ -30,7 +30,7 @@ static void __p(char* buf, size_t size, struct CircularLinkedList* list) {
     _p(buf, size, (struct Y*)list);
 }
 
-#define EQUAL_CIRCULAR_LINKED_LIST(list, expected) EQUAL_BY(list, expected, __c, __p)
+#define EQUAL_CIRCULAR_LINKED_LIST(list, expected) EQUAL_BY(list, expected, _equalLists, __p)
 
 /*============================================================================*/
 /* TEST SUITE A: CircularLinkedList_new                                       */
@@ -40,7 +40,7 @@ TEST_CASE(New, "Creates a non-NULL list structure") {
     struct CircularLinkedList* list = CircularLinkedList_new();
     NON_EQUAL_NULL(list);
     EQUAL_NULL(list->p_last);
-    EQUAL_INT(list->size, 0);
+    EQUAL_INT(0, list->size);
 }
 TEST_CASE(New, "Allocates exactly one block and frees none") {
     UT_disable_leak_check();
