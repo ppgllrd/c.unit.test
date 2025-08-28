@@ -10,8 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
-#include <ctype.h> 
+#include <ctype.h>
 #include <math.h>
+#include <time.h> // For timing execution
 
 #ifdef __GNUC__
 #pragma GCC diagnostic push
@@ -33,7 +34,6 @@
     #include <sys/wait.h>
     #include <signal.h>
     #include <fcntl.h>
-    #include <time.h>
     #include <errno.h>
     #define UT_IS_TTY isatty(STDOUT_FILENO)
 #endif
@@ -45,6 +45,7 @@
 #define _UT_STDERR_BUFFER_SIZE 4096
 #define _UT_SUITE_RESULTS_DETAILS_SIZE 1024
 #define _UT_MAX_SUITES 128
+#define _UT_SERIALIZATION_BUFFER_SIZE 8192
 
 // Forward declarations
 typedef void (*_UT_TestFunction)(void);
@@ -60,6 +61,64 @@ struct _UT_TestInfo {
 };
 
 /*============================================================================*/
+/* SECTION 1.5: RESULT DATA MODEL & SERIALIZATION                             */
+/*============================================================================*/
+
+// Enum for the status of a test result
+typedef enum {
+    _UT_STATUS_PENDING,
+    _UT_STATUS_PASSED,
+    _UT_STATUS_FAILED,
+    _UT_STATUS_CRASHED,
+    _UT_STATUS_TIMEOUT,
+    _UT_STATUS_DEATH_TEST_PASSED
+} _UT_TestStatus;
+
+// Represents a single assertion failure
+typedef struct _UT_AssertionFailure {
+    char* file;
+    int line;
+    char* condition_str;
+    char* expected_str;
+    char* actual_str;
+    struct _UT_AssertionFailure* next;
+} _UT_AssertionFailure;
+
+// Represents the complete result of a single test case
+typedef struct _UT_TestResult {
+    const char* suite_name;
+    const char* test_name;
+    _UT_TestStatus status;
+    double duration_ms;
+    char* captured_output; // Combined stdout/stderr from child process
+    _UT_AssertionFailure* failures; // Linked list of failures
+    struct _UT_TestResult* next;
+} _UT_TestResult;
+
+// Represents the aggregated results for a test suite
+typedef struct _UT_SuiteResult {
+    const char* name;
+    int total_tests;
+    int passed_tests;
+    char details[_UT_SUITE_RESULTS_DETAILS_SIZE];
+    int details_idx;
+    _UT_TestResult* test_results_head;
+    _UT_TestResult* test_results_tail;
+    struct _UT_SuiteResult* next;
+} _UT_SuiteResult;
+
+// Represents the entire test run
+typedef struct {
+    int total_suites;
+    int total_tests;
+    int passed_tests;
+    double total_duration_ms;
+    _UT_SuiteResult* suites_head;
+    _UT_SuiteResult* suites_tail;
+} _UT_TestRun;
+
+
+/*============================================================================*/
 /* SECTION 2: GLOBAL STATE AND COLOR MANAGEMENT                               */
 /*============================================================================*/
 
@@ -68,9 +127,8 @@ static _UT_TestInfo* g_UT_registry_tail = NULL;
 static int _UT_use_color = 1;
 static int _UT_is_ci_mode = 0;
 
-typedef struct { int passed; int total; char details[_UT_SUITE_RESULTS_DETAILS_SIZE]; } _UT_SuiteResult;
-static _UT_SuiteResult _UT_all_suite_results[_UT_MAX_SUITES];
-static int _UT_suite_count = 0;
+// Global state for the currently running test (in the child process)
+static _UT_TestResult* g_UT_current_test_result = NULL;
 
 #define KNRM (_UT_use_color ? "\x1B[0m" : "")
 #define KRED (_UT_use_color ? "\x1B[31m" : "")
@@ -149,10 +207,21 @@ int _UT_leak_UT_check_enabled = 1;
 // Provide explicit declarations for the standard library memory functions.
 #include <stdlib.h>
 
+// Helper to safely duplicate a string
+static char* _UT_strdup(const char* s) {
+    if (!s) return NULL;
+    size_t len = strlen(s) + 1;
+    char* new_s = (char*)malloc(len);
+    if (new_s) memcpy(new_s, s, len);
+    return new_s;
+}
+
 #pragma pop_macro("free")
 #pragma pop_macro("realloc")
 #pragma pop_macro("calloc")
 #pragma pop_macro("malloc")
+
+static void _UT_record_failure(const char* file, int line, const char* cond_str, const char* exp_str, const char* act_str);
 
 /**
  * @brief Dynamically enables memory tracking at runtime.
@@ -203,40 +272,34 @@ static void _UT_init_memory_tracking(void) {
     _UT_leak_UT_check_enabled = 1;     // Ensure leak checking is active by default for each test.
 }
 
-// Checks for memory leaks at the end of a test and exits if any are found.
+// MODIFIED: Checks for leaks and records them as an assertion failure instead of exiting.
 static void _UT_check_for_leaks(void) {
     _UT_mem_tracking_enabled = 0; // Disable tracking during check.
     _UT_MemInfo* current = _UT_mem_head;
     int leaks_found = 0;
+    char leak_details[1024] = "Memory leak detected.";
 
     while (current != NULL) {
-        // The crucial change: only report a leak if it's NOT a baseline allocation.
         if (current->is_baseline == 0) {
-            if (!leaks_found) {
-                // Print the header only once, and only if we actually find a real leak.
-                fprintf(stderr, "\n   %sTEST FAILED!%s\n", KRED, KNRM);
-                fprintf(stderr, "   Reason: Memory leak detected.\n");
-                leaks_found = 1;
-            }
-            fprintf(stderr, "      - %zu bytes allocated at %s:%d\n", current->size, current->file, current->line);
+            leaks_found = 1;
+            char leak_info[256];
+            snprintf(leak_info, sizeof(leak_info), "\n      - %zu bytes allocated at %s:%d", current->size, current->file, current->line);
+            strncat(leak_details, leak_info, sizeof(leak_details) - strlen(leak_details) - 1);
         }
         current = current->next;
     }
 
     if (leaks_found) {
-        exit(1);
+        _UT_record_failure("Memory Tracker", 0, "No memory leaks", "0 un-freed allocations", leak_details);
     }
 }
 
+
 // Wrapper for malloc that adds allocation details to the tracking list.
 static void* _UT_malloc(size_t size, const char* file, int line) {
-    // Bypass tracking if the feature is disabled globally or dynamically turned off.
-    if (!_UT_mem_tracking_enabled || !_UT_mem_tracking_is_active) {
-        return malloc(size);
-    }
+    if (!_UT_mem_tracking_enabled || !_UT_mem_tracking_is_active) { return malloc(size); }
     void* ptr = malloc(size);
     if (ptr) {
-        // Temporarily disable tracking to prevent self-tracking the _UT_MemInfo allocation.
         _UT_mem_tracking_is_active = 0;
         _UT_MemInfo* info = (_UT_MemInfo*)malloc(sizeof(_UT_MemInfo));
         _UT_mem_tracking_is_active = 1;
@@ -251,13 +314,9 @@ static void* _UT_malloc(size_t size, const char* file, int line) {
 
 // Wrapper for calloc that adds allocation details to the tracking list.
 static void* _UT_calloc(size_t num, size_t size, const char* file, int line) {
-    // Bypass tracking if the feature is disabled globally or dynamically turned off.
-    if (!_UT_mem_tracking_enabled || !_UT_mem_tracking_is_active) {
-        return calloc(num, size);
-    }
+    if (!_UT_mem_tracking_enabled || !_UT_mem_tracking_is_active) { return calloc(num, size); }
     void* ptr = calloc(num, size);
     if (ptr) {
-        // Temporarily disable tracking to prevent self-tracking the _UT_MemInfo allocation.
         _UT_mem_tracking_is_active = 0;
         _UT_MemInfo* info = (_UT_MemInfo*)malloc(sizeof(_UT_MemInfo));
         _UT_mem_tracking_is_active = 1;
@@ -270,67 +329,48 @@ static void* _UT_calloc(size_t num, size_t size, const char* file, int line) {
     return ptr;
 }
 
-// Wrapper for realloc that updates the tracking information for a memory block.
+// MODIFIED: realloc failure records an assertion and exits, as it's a critical error.
 static void* _UT_realloc(void* old_ptr, size_t new_size, const char* file, int line) {
-    if (old_ptr == NULL) {
-        return _UT_malloc(new_size, file, line);
-    }
-    // Bypass tracking if the feature is disabled globally or dynamically turned off.
-    if (!_UT_mem_tracking_enabled || !_UT_mem_tracking_is_active) {
-        return realloc(old_ptr, new_size);
-    }
+    if (old_ptr == NULL) { return _UT_malloc(new_size, file, line); }
+    if (!_UT_mem_tracking_enabled || !_UT_mem_tracking_is_active) { return realloc(old_ptr, new_size); }
     _UT_MemInfo* c = _UT_mem_head;
-    while (c != NULL && c->address != old_ptr) {
-        c = c->next;
-    }
+    while (c != NULL && c->address != old_ptr) { c = c->next; }
     if (c == NULL) {
-        fprintf(stderr, "\n   %sTEST FAILED!%s\n   Reason: realloc of invalid pointer (%p) at %s:%d\n", KRED, KNRM, old_ptr, file, line);
-        exit(1);
+        fprintf(stderr, "FATAL: realloc of invalid pointer (%p) at %s:%d\n", old_ptr, file, line);
+        exit(120); // Special exit code for fatal error
     }
     void* new_ptr = realloc(old_ptr, new_size);
     if (new_ptr) {
-        // Update the tracking node with the new address and size.
         c->address = new_ptr; c->size = new_size; c->file = file; c->line = line;
     }
     return new_ptr;
 }
 
-// Wrapper for free that removes an allocation from the tracking list.
+// MODIFIED: free failure records an assertion and exits, as it's a critical error.
 static void _UT_free(void* ptr, const char* file, int line) {
     if (ptr == NULL) {
-        // Calling free(NULL) is a valid no-op. The test framework can be stricter
-        // and fail the test if tracking is active, as it may indicate a bug.
         if (_UT_mem_tracking_enabled && _UT_mem_tracking_is_active) {
-            fprintf(stderr, "\n   %sTEST FAILED!%s\n   Reason: Attempt to free NULL pointer at %s:%d\n", KRED, KNRM, file, line);
-            exit(1);
+            fprintf(stderr, "FATAL: Attempt to free NULL pointer at %s:%d\n", file, line);
+            exit(121); // Special exit code
         }
         return;
     }
-    // Bypass tracking if the feature is disabled globally or dynamically turned off.
-    if (!_UT_mem_tracking_enabled || !_UT_mem_tracking_is_active) {
-        free(ptr);
-        return;
-    }
+    if (!_UT_mem_tracking_enabled || !_UT_mem_tracking_is_active) { free(ptr); return; }
     _UT_MemInfo *c = _UT_mem_head, *p = NULL;
-    while (c != NULL && c->address != ptr) {
-        p = c; c = c->next;
-    }
+    while (c != NULL && c->address != ptr) { p = c; c = c->next; }
     if (c == NULL) {
-        fprintf(stderr, "\n   %sTEST FAILED!%s\n   Reason: Invalid or double-freed pointer (%p) at %s:%d\n", KRED, KNRM, ptr, file, line);
-        exit(1);
+        fprintf(stderr, "FATAL: Invalid or double-freed pointer (%p) at %s:%d\n", ptr, file, line);
+        exit(122); // Special exit code
     }
-    // Unlink the node from the tracking list.
     if (p == NULL) _UT_mem_head = c->next;
     else p->next = c->next;
-
-    // Temporarily disable tracking to prevent self-tracking the free of the _UT_MemInfo node.
     _UT_mem_tracking_is_active = 0;
     free(c);
     _UT_mem_tracking_is_active = 1;
-
     UT_free_count++;
     free(ptr);
 }
+
 
 // Restore original macro definitions, if they existed.
 #pragma pop_macro("free")
@@ -405,27 +445,20 @@ static int _ut_min3(int a, int b, int c) {
  * This is a space-optimized implementation.
  */
 static int _ut_levenshtein_distance(const char *s1, const char *s2) {
-    int s1len = strlen(s1);
-    int s2len = strlen(s2);
-
+    if (!s1 || !s2) return 9999;
+    int s1len = (int)strlen(s1);
+    int s2len = (int)strlen(s2);
     int *v0 = (int *)malloc((s2len + 1) * sizeof(int));
     int *v1 = (int *)malloc((s2len + 1) * sizeof(int));
-
-    for (int i = 0; i <= s2len; i++) {
-        v0[i] = i;
-    }
-
+    for (int i = 0; i <= s2len; i++) { v0[i] = i; }
     for (int i = 0; i < s1len; i++) {
         v1[0] = i + 1;
         for (int j = 0; j < s2len; j++) {
             int cost = (tolower((unsigned char)s1[i]) == tolower((unsigned char)s2[j])) ? 0 : 1;
             v1[j + 1] = _ut_min3(v1[j] + 1, v0[j + 1] + 1, v0[j] + cost);
         }
-        for (int j = 0; j <= s2len; j++) {
-            v0[j] = v1[j];
-        }
+        for (int j = 0; j <= s2len; j++) { v0[j] = v1[j]; }
     }
-
     int result = v1[s2len];
     free(v0);
     free(v1);
@@ -434,88 +467,137 @@ static int _ut_levenshtein_distance(const char *s1, const char *s2) {
 
 /**
  * @brief  (Auxiliar function) Calculates a similarity ratio (0.0 to 1.0) based on the Levenshtein distance.
- *
  */
 static float _ut_calculate_similarity_ratio(const char *s1, const char *s2) {
-    int s1len = strlen(s1);
-    int s2len = strlen(s2);
+    if (!s1 || !s2) return 0.0f;
+    int s1len = (int)strlen(s1);
+    int s2len = (int)strlen(s2);
     if (s1len == 0 && s2len == 0) return 1.0f;
-
     int max_len = (s1len > s2len) ? s1len : s2len;
+    if (max_len == 0) return 1.0f; // Both empty
     int distance = _ut_levenshtein_distance(s1, s2);
-    
     return 1.0f - ((float)distance / max_len);
 }
 
-#define _UT_ASSERT_GENERIC(condition, condition_str, expected_str, actual_str) do { if (!(condition)) { fprintf(stderr, "\n   %sTEST FAILED!%s\n", KRED, KNRM); fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", condition_str, __FILE__, __LINE__); if ((expected_str)[0]) fprintf(stderr, "   Expected: %s%s%s\n", KGRN, expected_str, KNRM); if ((actual_str)[0]) fprintf(stderr, "   Got: %s%s%s\n", KRED, actual_str, KNRM); exit(1); } } while (0)
-#define _UT_ASSERT_GENERIC_PROP(condition, condition_str, help_text, actual_val_str) do { if (!(condition)) { fprintf(stderr, "\n   %sTEST FAILED!%s\n", KRED, KNRM); fprintf(stderr, "   Property failed: %s\n      At: %s:%d\n", condition_str, __FILE__, __LINE__); fprintf(stderr, "   Reason: %s%s%s\n", KGRN, help_text, KNRM); fprintf(stderr, "   Actual value: %s%s%s\n", KRED, actual_val_str, KNRM); exit(1); } } while (0)
+// Internal helper function to record a failure. Not a macro.
+static void _UT_record_failure(const char* file, int line, const char* cond_str, const char* exp_str, const char* act_str) {
+    if (g_UT_current_test_result) {
+        #ifdef UT_MEMORY_TRACKING_ENABLED
+        _UT_mem_tracking_is_active = 0; // Disable tracking for internal allocations
+        #endif
+        _UT_AssertionFailure* failure = (_UT_AssertionFailure*)calloc(1, sizeof(_UT_AssertionFailure));
+        if (failure) {
+            failure->file = _UT_strdup(file);
+            failure->line = line;
+            failure->condition_str = _UT_strdup(cond_str);
+            failure->expected_str = _UT_strdup(exp_str);
+            failure->actual_str = _UT_strdup(act_str);
+            // Prepend to the list
+            failure->next = g_UT_current_test_result->failures;
+            g_UT_current_test_result->failures = failure;
+        }
+        #ifdef UT_MEMORY_TRACKING_ENABLED
+        _UT_mem_tracking_is_active = 1; // **FIX**: Re-enable tracking
+        #endif
+    }
+}
 
 /**
  * @brief Asserts that a condition is true.
  *
- * If the condition evaluates to false, the test fails immediately and prints an error message.
+ * If the condition evaluates to false, the test fails, records the failure, and continues execution.
  *
  * @param condition The expression to evaluate.
  */
-#define ASSERT(condition) _UT_ASSERT_GENERIC(!!(condition), #condition, "true", (condition) ? "true" : "false")
+#define ASSERT(condition) do { \
+    if (!(condition)) { \
+        _UT_record_failure(__FILE__, __LINE__, #condition, "true", "false"); \
+    } \
+} while (0)
 
 /**
  * @brief Asserts that a condition is false.
  *
- * If the condition evaluates to true, the test fails immediately and prints an error message.
+ * If the condition evaluates to true, the test fails, records the failure, and continues execution.
  *
  * @param condition The expression to evaluate.
  */
-#define REFUTE(condition) _UT_ASSERT_GENERIC(!(condition), #condition, "false", (condition) ? "true" : "false")
+#define REFUTE(condition) do { \
+    if (condition) { \
+        _UT_record_failure(__FILE__, __LINE__, "!(" #condition ")", "false", "true"); \
+    } \
+} while (0)
 
 /**
  * @brief Asserts that two integer values are equal.
  *
- * If the values are not equal, the test fails and prints both the expected and actual values.
+ * If the values are not equal, the test fails and records both the expected and actual values.
  *
  * @param expected The expected integer value.
  * @param actual The actual integer value to check.
  */
-#define EQUAL_INT(expected, actual) do { int e = (expected); int a = (actual); char e_buf[32], a_buf[32]; snprintf(e_buf, 32, "%d", e); snprintf(a_buf, 32, "%d", a); _UT_ASSERT_GENERIC(e == a, #expected " == " #actual, e_buf, a_buf); } while (0)
+#define EQUAL_INT(expected, actual) do { \
+    int e = (expected); int a = (actual); \
+    if (e != a) { \
+        char e_buf[32], a_buf[32]; \
+        snprintf(e_buf, 32, "%d", e); \
+        snprintf(a_buf, 32, "%d", a); \
+        _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e_buf, a_buf); \
+    } \
+} while (0)
+
 
 /**
  * @brief Asserts that two character values are equal.
  *
- * If the characters are not equal, the test fails and prints both.
+ * If the characters are not equal, the test fails and records both.
  *
  * @param expected The expected char value.
  * @param actual The actual char value to check.
  */
-#define EQUAL_CHAR(expected, actual) do { char e = (expected); char a = (actual); char e_buf[4] = {'\'', e, '\'', 0}, a_buf[4] = {'\'', a, '\'', 0}; _UT_ASSERT_GENERIC(e == a, #expected " == " #actual, e_buf, a_buf); } while (0)
+#define EQUAL_CHAR(expected, actual) do { \
+    char e = (expected); char a = (actual); \
+    if (e != a) { \
+        char e_buf[4] = {'\'', e, '\'', 0}; \
+        char a_buf[4] = {'\'', a, '\'', 0}; \
+        _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e_buf, a_buf); \
+    } \
+} while(0)
 
 /**
  * @brief Asserts that two pointer values are equal.
  *
- * If the pointers are not equal, the test fails and prints both pointer addresses.
- * This is useful for verifying that pointers point to the same memory location.
+ * If the pointers are not equal, the test fails and records both pointer addresses.
  *
  * @param expected The expected pointer value.
  * @param actual The actual pointer value to check.
  */
-#define EQUAL_POINTER(expected, actual) do { void* e = (void*)(expected); void* a = (void*)(actual); char e_buf[32], a_buf[32]; snprintf(e_buf, 32, "%p", e); snprintf(a_buf, 32, "%p", a); _UT_ASSERT_GENERIC(e == a, #expected " == " #actual, e_buf, a_buf); } while (0)
+#define EQUAL_POINTER(expected, actual) do { \
+    const void* e = (const void*)(expected); const void* a = (const void*)(actual); \
+    if (e != a) { \
+        char e_buf[32], a_buf[32]; \
+        snprintf(e_buf, 32, "%p", e); \
+        snprintf(a_buf, 32, "%p", a); \
+        _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e_buf, a_buf); \
+    } \
+} while (0)
 
 /**
  * @brief Asserts that a pointer value is NULL.
- *
- * If the pointer is not NULL, the test fails and prints the actual pointer address.
- *
  * @param actual The actual pointer value to check.
  */
 #define EQUAL_NULL(actual) EQUAL_POINTER(NULL, (actual))
 
 /**
  * @brief Asserts that a pointer value is not NULL.
- *
- * If the pointer is NULL, the test fails and prints a message.
- *
  * @param actual The actual pointer value to check.
  */
-#define NON_EQUAL_NULL(actual) do { void* a = (void*)(actual); _UT_ASSERT_GENERIC(a != NULL, #actual " != NULL", "non-NULL pointer", "NULL"); } while (0)
+#define NON_EQUAL_NULL(actual) do { \
+    const void* a = (const void*)(actual); \
+    if (a == NULL) { \
+        _UT_record_failure(__FILE__, __LINE__, #actual " != NULL", "non-NULL pointer", "NULL"); \
+    } \
+} while (0)
 
 /**
  * @brief Asserts that two C-style strings are equal.
@@ -525,83 +607,77 @@ static float _ut_calculate_similarity_ratio(const char *s1, const char *s2) {
  * @param expected The expected string value.
  * @param actual The actual string value to check.
  */
-#define EQUAL_STRING(expected, actual) do { const char* e = (expected); const char* a = (actual); _UT_ASSERT_GENERIC(e && a && strcmp(e, a) == 0, #expected " == " #actual, e ? e : "NULL", a ? a : "NULL"); } while (0)
+#define EQUAL_STRING(expected, actual) do { \
+    const char* e = (expected); const char* a = (actual); \
+    if (!e || !a || strcmp(e, a) != 0) { \
+        _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e ? e : "NULL", a ? a : "NULL"); \
+    } \
+} while (0)
 
 /**
  * @brief Asserts that two custom data types are equal using a provided comparison function.
- *
- * This allows for equality testing of complex structs or custom types.
- *
  * @param expected The expected value.
  * @param actual The actual value.
  * @param compare_fn A function pointer `int (*)(expected, actual)` that returns true if the items are equal.
  * @param print_fn A function pointer `void (*)(char* buf, size_t size, val)` that prints the value into a buffer.
  */
-#define EQUAL_BY(expected, actual, compare_fn, print_fn) do { __typeof__(expected) _exp = (expected); __typeof__(actual) _act = (actual); if (!compare_fn(_exp, _act)) { char _exp_str[1024] = {0}, _act_str[1024] = {0}; print_fn(_exp_str, sizeof(_exp_str), _exp); print_fn(_act_str, sizeof(_act_str), _act); _UT_ASSERT_GENERIC(0, #compare_fn "(" #expected ", " #actual ")", _exp_str, _act_str); } } while (0)
+#define EQUAL_BY(expected, actual, compare_fn, print_fn) do { \
+    __typeof__(expected) _exp = (expected); __typeof__(actual) _act = (actual); \
+    if (!compare_fn(_exp, _act)) { \
+        char _exp_str[1024] = {0}, _act_str[1024] = {0}; \
+        char _cond_str[1024] = {0}; \
+        print_fn(_exp_str, sizeof(_exp_str), _exp); \
+        print_fn(_act_str, sizeof(_act_str), _act); \
+        snprintf(_cond_str, sizeof(_cond_str), "%s(%s, %s)", #compare_fn, #expected, #actual); \
+        _UT_record_failure(__FILE__, __LINE__, _cond_str, _exp_str, _act_str); \
+    } \
+} while (0)
 
 /**
  * @brief Asserts that a value satisfies a given property (predicate).
- *
- * This is useful for property-based testing where you check for characteristics
- * rather than a specific value.
- *
  * @param value The value to test.
  * @param predicate_fn A function pointer `int (*)(value)` that returns true if the property holds.
  * @param print_fn A function pointer `void (*)(char* buf, size_t size, val)` that prints the value.
  * @param help_text A descriptive string explaining the property that was violated.
  */
-#define PROPERTY(value, predicate_fn, print_fn, help_text) do { __typeof__(value) _val = (value); if (!predicate_fn(_val)) { char _val_str[1024] = {0}; print_fn(_val_str, sizeof(_val_str), _val); char _cond_str[1024]; snprintf(_cond_str, sizeof(_cond_str), "%s(%s)", #predicate_fn, #value); _UT_ASSERT_GENERIC_PROP(0, _cond_str, help_text, _val_str); } } while(0)
+#define PROPERTY(value, predicate_fn, print_fn, help_text) do { \
+    __typeof__(value) _val = (value); \
+    if (!predicate_fn(_val)) { \
+        char _val_str[1024] = {0}; \
+        char _cond_str[1024] = {0}; \
+        char _exp_str[1024] = {0}; \
+        print_fn(_val_str, sizeof(_val_str), _val); \
+        snprintf(_cond_str, sizeof(_cond_str), "%s(%s)", #predicate_fn, #value); \
+        snprintf(_exp_str, sizeof(_exp_str), "A value that satisfies: %s", help_text); \
+        _UT_record_failure(__FILE__, __LINE__, _cond_str, _exp_str, _val_str); \
+    } \
+} while(0)
 
 static void _UT_print_int(char* buf, size_t size, int val) { snprintf(buf, size, "%d", val); }
 static void _UT_print_char(char* buf, size_t size, char val) { snprintf(buf, size, "'%c'", val); }
 static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf(buf, size, "\"%s\"", val); }
 
-/**
- * @brief Asserts that an integer value satisfies a given property.
- * @see PROPERTY
- */
 #define PROPERTY_INT(value, predicate_fn, help_text) PROPERTY(value, predicate_fn, _UT_print_int, help_text)
-
-/**
- * @brief Asserts that a character value satisfies a given property.
- * @see PROPERTY
- */
 #define PROPERTY_CHAR(value, predicate_fn, help_text) PROPERTY(value, predicate_fn, _UT_print_char, help_text)
-
-/**
- * @brief Asserts that a string value satisfies a given property.
- * @see PROPERTY
- */
 #define PROPERTY_STRING(value, predicate_fn, help_text) PROPERTY(value, predicate_fn, _UT_print_string, help_text)
 
 #ifdef UT_MEMORY_TRACKING_ENABLED
 /**
  * @brief (Memory Tracking) Asserts that the total number of malloc/calloc/realloc calls matches the expected count.
- *
- * This macro is only available when the `UT_MEMORY_TRACKING_ENABLED` flag is defined during compilation.
- *
  * @param expected The expected number of allocations.
  */
-#define ASSERT_ALLOC_COUNT(expected) do { int e = (expected), a = UT_alloc_count; char e_buf[32], a_buf[32]; snprintf(e_buf, 32, "%d", e); snprintf(a_buf, 32, "%d", a); _UT_ASSERT_GENERIC(e == a, "UT_alloc_count == " #expected, e_buf, a_buf); } while(0)
+#define ASSERT_ALLOC_COUNT(expected) EQUAL_INT(expected, UT_alloc_count)
 
 /**
  * @brief (Memory Tracking) Asserts that the total number of free calls matches the expected count.
- *
- * This macro is only available when the `UT_MEMORY_TRACKING_ENABLED` flag is defined during compilation.
- *
  * @param expected The expected number of successful frees.
  */
-#define ASSERT_FREE_COUNT(expected) do { int e = (expected), a = UT_free_count; char e_buf[32], a_buf[32]; snprintf(e_buf, 32, "%d", e); snprintf(a_buf, 32, "%d", a); _UT_ASSERT_GENERIC(e == a, "UT_free_count == " #expected, e_buf, a_buf); } while(0)
+#define ASSERT_FREE_COUNT(expected) EQUAL_INT(expected, UT_free_count)
 #endif
 
 #ifdef _WIN32
     /**
      * @brief Defines a test case that is expected to fail with a standard C assertion.
-     *        This is a cross-platform macro that adapts to the OS's termination signal.
-     *
-     * On Windows, this expects an exit code of 3.
-     * On POSIX systems, this expects a SIGABRT signal.
-     *
      * @param SuiteName The name of the test suite.
      * @param TestDescription A descriptive name for the test case.
      */
@@ -609,90 +685,58 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
 #else
     /**
      * @brief Defines a test case that is expected to fail with a standard C assertion.
-     *        This is a cross-platform macro that adapts to the OS's termination signal.
-     *
-     * On Windows, this expects an exit code of 3.
-     * On POSIX systems, this expects a SIGABRT signal.
-     *
      * @param SuiteName The name of the test suite.
      * @param TestDescription A descriptive name for the test case.
      */
     #define TEST_ASSERTION(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT)
 #endif
 
-// Define default tolerances for float and double comparisons.
 #ifndef UT_DEFAULT_FLOAT_TOLERANCE
 #define UT_DEFAULT_FLOAT_TOLERANCE 1e-5f
 #endif
-
 #ifndef UT_DEFAULT_DOUBLE_TOLERANCE
 #define UT_DEFAULT_DOUBLE_TOLERANCE 1e-9
 #endif
 
 /**
  * @brief Asserts that two float values are within a given tolerance of each other.
- *
- * Direct comparison of floating-point numbers is unreliable. This macro checks if
- * the absolute difference between 'expected' and 'actual' is within the 'tolerance'.
- *
  * @param expected The expected float value.
  * @param actual The actual float value.
  * @param tolerance The maximum allowed difference.
  */
 #define NEAR_FLOAT(expected, actual, tolerance) do { \
-    float e = (expected); \
-    float a = (actual); \
-    float t = (tolerance); \
+    float e = (expected); float a = (actual); float t = (tolerance); \
     if (fabsf(e - a) > t) { \
         char e_buf[64], a_buf[64], cond_str[256]; \
         snprintf(e_buf, sizeof(e_buf), "%f", e); \
         snprintf(a_buf, sizeof(a_buf), "%f (difference: %e)", a, fabsf(e - a)); \
         snprintf(cond_str, sizeof(cond_str), "fabsf(%s - %s) <= %s", #expected, #actual, #tolerance); \
-        _UT_ASSERT_GENERIC(0, cond_str, e_buf, a_buf); \
+        _UT_record_failure(__FILE__, __LINE__, cond_str, e_buf, a_buf); \
     } \
 } while (0)
 
 /**
  * @brief Asserts that two double values are within a given tolerance of each other.
- *
  * @param expected The expected double value.
  * @param actual The actual double value.
  * @param tolerance The maximum allowed difference.
  */
 #define NEAR_DOUBLE(expected, actual, tolerance) do { \
-    double e = (expected); \
-    double a = (actual); \
-    double t = (tolerance); \
+    double e = (expected); double a = (actual); double t = (tolerance); \
     if (fabs(e - a) > t) { \
         char e_buf[64], a_buf[64], cond_str[256]; \
         snprintf(e_buf, sizeof(e_buf), "%lf", e); \
         snprintf(a_buf, sizeof(a_buf), "%lf (difference: %e)", a, fabs(e - a)); \
         snprintf(cond_str, sizeof(cond_str), "fabs(%s - %s) <= %s", #expected, #actual, #tolerance); \
-        _UT_ASSERT_GENERIC(0, cond_str, e_buf, a_buf); \
+        _UT_record_failure(__FILE__, __LINE__, cond_str, e_buf, a_buf); \
     } \
 } while (0)
 
-/**
- * @brief Asserts that two float values are nearly equal using a default tolerance.
- * @see NEAR_FLOAT
- * @see UT_DEFAULT_FLOAT_TOLERANCE
- */
 #define EQUAL_FLOAT(expected, actual) NEAR_FLOAT(expected, actual, UT_DEFAULT_FLOAT_TOLERANCE)
-
-/**
- * @brief Asserts that two double values are nearly equal using a default tolerance.
- * @see NEAR_DOUBLE
- * @see UT_DEFAULT_DOUBLE_TOLERANCE
- */
 #define EQUAL_DOUBLE(expected, actual) NEAR_DOUBLE(expected, actual, UT_DEFAULT_DOUBLE_TOLERANCE)
 
 /**
  * @brief (Memory Tracking) Asserts the exact number of allocations and frees that occur within a code block.
- *
- * This macro provides a clean way to verify the memory behavior of a specific function
- * or piece of code without manual bookkeeping of counters. It is a direct replacement for
- * manually snapshotting UT_alloc_count and UT_free_count.
- *
  * @param code_block The block of code to execute and monitor.
  * @param expected_allocs The exact number of new allocations expected within the block.
  * @param expected_frees The exact number of frees expected within the block.
@@ -703,25 +747,22 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
     { code_block; } \
     int _alloc_delta_ = UT_alloc_count - _allocs_before_; \
     int _free_delta_ = UT_free_count - _frees_before_; \
-    char _a_exp_buf_[32], _a_act_buf_[32], _f_exp_buf_[32], _f_act_buf_[32]; \
-    snprintf(_a_exp_buf_, 32, "%d", (int)(expected_allocs)); \
-    snprintf(_a_act_buf_, 32, "%d", _alloc_delta_); \
-    snprintf(_f_exp_buf_, 32, "%d", (int)(expected_frees)); \
-    snprintf(_f_act_buf_, 32, "%d", _free_delta_); \
-    _UT_ASSERT_GENERIC(_alloc_delta_ == (expected_allocs), "Allocation count mismatch in code block", _a_exp_buf_, _a_act_buf_); \
-    _UT_ASSERT_GENERIC(_free_delta_ == (expected_frees), "Free count mismatch in code block", _f_exp_buf_, _f_act_buf_); \
+    if (_alloc_delta_ != (expected_allocs)) { \
+        char _a_exp_buf_[32], _a_act_buf_[32]; \
+        snprintf(_a_exp_buf_, 32, "%d", (int)(expected_allocs)); \
+        snprintf(_a_act_buf_, 32, "%d", _alloc_delta_); \
+        _UT_record_failure(__FILE__, __LINE__, "Allocation count mismatch in code block", _a_exp_buf_, _a_act_buf_); \
+    } \
+    if (_free_delta_ != (expected_frees)) { \
+        char _f_exp_buf_[32], _f_act_buf_[32]; \
+        snprintf(_f_exp_buf_, 32, "%d", (int)(expected_frees)); \
+        snprintf(_f_act_buf_, 32, "%d", _free_delta_); \
+        _UT_record_failure(__FILE__, __LINE__, "Free count mismatch in code block", _f_exp_buf_, _f_act_buf_); \
+    } \
 } while (0)
 
 /**
  * @brief (Memory Tracking) Asserts memory changes and marks new allocations as baseline.
- *
- * This macro performs the same checks as ASSERT_MEMORY_CHANGES but adds a crucial
- * final step: it flags any new allocations that occurred within the block as 'baseline'.
- * This effectively incorporates the newly allocated memory into the test's setup,
- * ensuring the end-of-test leak checker will not report it as a leak. This is ideal
- * for testing functions like 'insert' or 'add' where the newly created memory is
- * intentionally not freed within the test's scope.
- *
  * @param code_block The block of code to execute and monitor.
  * @param expected_allocs The exact number of new allocations expected within the block.
  * @param expected_frees The exact number of frees expected within the block.
@@ -732,18 +773,21 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
     { code_block; } \
     int _alloc_delta_ = UT_alloc_count - _allocs_before_; \
     int _free_delta_ = UT_free_count - _frees_before_; \
-    char _a_exp_buf_[32], _a_act_buf_[32], _f_exp_buf_[32], _f_act_buf_[32]; \
-    snprintf(_a_exp_buf_, 32, "%d", (int)(expected_allocs)); \
-    snprintf(_a_act_buf_, 32, "%d", _alloc_delta_); \
-    snprintf(_f_exp_buf_, 32, "%d", (int)(expected_frees)); \
-    snprintf(_f_act_buf_, 32, "%d", _free_delta_); \
-    _UT_ASSERT_GENERIC(_alloc_delta_ == (expected_allocs), "Allocation count mismatch in code block", _a_exp_buf_, _a_act_buf_); \
-    _UT_ASSERT_GENERIC(_free_delta_ == (expected_frees), "Free count mismatch in code block", _f_exp_buf_, _f_act_buf_); \
+    if (_alloc_delta_ != (expected_allocs)) { \
+        char _a_exp_buf_[32], _a_act_buf_[32]; \
+        snprintf(_a_exp_buf_, 32, "%d", (int)(expected_allocs)); \
+        snprintf(_a_act_buf_, 32, "%d", _alloc_delta_); \
+        _UT_record_failure(__FILE__, __LINE__, "Allocation count mismatch in code block", _a_exp_buf_, _a_act_buf_); \
+    } \
+    if (_free_delta_ != (expected_frees)) { \
+        char _f_exp_buf_[32], _f_act_buf_[32]; \
+        snprintf(_f_exp_buf_, 32, "%d", (int)(expected_frees)); \
+        snprintf(_f_act_buf_, 32, "%d", _free_delta_); \
+        _UT_record_failure(__FILE__, __LINE__, "Free count mismatch in code block", _f_exp_buf_, _f_act_buf_); \
+    } \
     _UT_MemInfo* current = _UT_mem_head; \
     for (int i = 0; i < _alloc_delta_ && current != NULL; ++i) { \
-        if (current->is_baseline == 0) { \
-            current->is_baseline = 1; \
-        } \
+        if (current->is_baseline == 0) { current->is_baseline = 1; } \
         current = current->next; \
     } \
 } while (0)
@@ -751,16 +795,11 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
 /*============================================================================*/
 /* SECTION 6: STDOUT CAPTURE AND ASSERTIONS                                   */
 /*============================================================================*/
-
 #define _STDOUT_CAPTURE_BUFFER_SIZE 8192
 static char _UT_stdout_capture_buffer[_STDOUT_CAPTURE_BUFFER_SIZE];
 
 #ifdef _WIN32
-    // Windows-specific implementation for stdout redirection.
-    static HANDLE _UT_stdout_pipe_read = NULL;
-    static HANDLE _UT_stdout_pipe_write = NULL;
-    static HANDLE _UT_stdout_original_handle = NULL;
-
+    static HANDLE _UT_stdout_pipe_read = NULL, _UT_stdout_pipe_write = NULL, _UT_stdout_original_handle = NULL;
     static void _UT_start_capture_stdout(void) {
         fflush(stdout);
         _UT_stdout_original_handle = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -768,30 +807,23 @@ static char _UT_stdout_capture_buffer[_STDOUT_CAPTURE_BUFFER_SIZE];
         if (!CreatePipe(&_UT_stdout_pipe_read, &_UT_stdout_pipe_write, &sa, 0)) return;
         SetStdHandle(STD_OUTPUT_HANDLE, _UT_stdout_pipe_write);
     }
-
     static void _UT_stop_capture_stdout(char* buffer, size_t size) {
         fflush(stdout);
-        CloseHandle(_UT_stdout_pipe_write); // Close write handle to signal end of data.
+        CloseHandle(_UT_stdout_pipe_write);
         _UT_stdout_pipe_write = NULL;
-
         DWORD bytes_read = 0;
-        // Check if there is data in the pipe before reading to avoid blocking.
         DWORD bytes_available = 0;
         if (PeekNamedPipe(_UT_stdout_pipe_read, NULL, 0, NULL, &bytes_available, NULL) && bytes_available > 0) {
             ReadFile(_UT_stdout_pipe_read, buffer, (DWORD)size - 1, &bytes_read, NULL);
         }
         buffer[bytes_read] = '\0';
-
         CloseHandle(_UT_stdout_pipe_read);
         _UT_stdout_pipe_read = NULL;
         SetStdHandle(STD_OUTPUT_HANDLE, _UT_stdout_original_handle);
         _UT_stdout_original_handle = NULL;
     }
 #else
-    // POSIX-specific implementation for stdout redirection.
-    static int _UT_stdout_pipe[2] = {-1, -1};
-    static int _UT_stdout_original_fd = -1;
-
+    static int _UT_stdout_pipe[2] = {-1, -1}, _UT_stdout_original_fd = -1;
     static void _UT_start_capture_stdout(void) {
         fflush(stdout);
         _UT_stdout_original_fd = dup(STDOUT_FILENO);
@@ -799,18 +831,13 @@ static char _UT_stdout_capture_buffer[_STDOUT_CAPTURE_BUFFER_SIZE];
         dup2(_UT_stdout_pipe[1], STDOUT_FILENO);
         close(_UT_stdout_pipe[1]);
     }
-
     static void _UT_stop_capture_stdout(char* buffer, size_t size) {
         fflush(stdout);
-        dup2(_UT_stdout_original_fd, STDOUT_FILENO); // Restore stdout
+        dup2(_UT_stdout_original_fd, STDOUT_FILENO);
         close(_UT_stdout_original_fd);
-
-        ssize_t bytes_read = 0;
-        ssize_t total_bytes = 0;
-        // Make the read end non-blocking to read all available data without hanging.
+        ssize_t bytes_read = 0, total_bytes = 0;
         int flags = fcntl(_UT_stdout_pipe[0], F_GETFL, 0);
         fcntl(_UT_stdout_pipe[0], F_SETFL, flags | O_NONBLOCK);
-
         while ((bytes_read = read(_UT_stdout_pipe[0], buffer + total_bytes, size - 1 - total_bytes)) > 0) {
             total_bytes += bytes_read;
         }
@@ -821,59 +848,31 @@ static char _UT_stdout_capture_buffer[_STDOUT_CAPTURE_BUFFER_SIZE];
 
 // Internal helper to normalize a string: trims whitespace and collapses internal whitespace.
 static void _UT_normalize_string_for_comparison(char* str) {
+    if (!str) return;
     char *read_ptr = str, *write_ptr = str;
-    int in_whitespace = 1; // Start as if preceded by whitespace to trim leading spaces.
-
+    int in_whitespace = 1;
     while (*read_ptr) {
         if (isspace((unsigned char)*read_ptr)) {
-            if (!in_whitespace) {
-                *write_ptr++ = ' ';
-                in_whitespace = 1;
-            }
-        } else {
-            *write_ptr++ = *read_ptr;
-            in_whitespace = 0;
-        }
+            if (!in_whitespace) { *write_ptr++ = ' '; in_whitespace = 1; }
+        } else { *write_ptr++ = *read_ptr; in_whitespace = 0; }
         read_ptr++;
     }
-    // Trim trailing space if present.
-    if (write_ptr > str && *(write_ptr - 1) == ' ') {
-        write_ptr--;
-    }
+    if (write_ptr > str && *(write_ptr - 1) == ' ') { write_ptr--; }
     *write_ptr = '\0';
 }
 
-/**
- * @brief Asserts that a block of code prints an exact string to stdout.
- *
- * Captures everything printed to stdout during the execution of the code block
- * and compares it against the expected string. The comparison is case-sensitive
- * and whitespace-sensitive.
- *
- * @param code_block The C code to execute (e.g., a function call or a series of statements).
- * @param expected_str The exact string that the code is expected to print.
- */
 #define ASSERT_STDOUT_EQUAL(code_block, expected_str) do { \
     _UT_start_capture_stdout(); \
     { code_block; } \
     _UT_stop_capture_stdout(_UT_stdout_capture_buffer, sizeof(_UT_stdout_capture_buffer)); \
     const char* e = (expected_str); \
-    _UT_ASSERT_GENERIC(e && strcmp(e, _UT_stdout_capture_buffer) == 0, #code_block " prints " #expected_str, e, _UT_stdout_capture_buffer); \
+    if (!e || strcmp(e, _UT_stdout_capture_buffer) != 0) { \
+        char cond_str[256]; \
+        snprintf(cond_str, sizeof(cond_str), "output of '%s' equals '%s'", #code_block, #expected_str); \
+        _UT_record_failure(__FILE__, __LINE__, cond_str, e, _UT_stdout_capture_buffer); \
+    } \
 } while (0)
 
-/**
- * @brief Asserts that a block of code prints a string equivalent to the expected one.
- *
- * "Equivalent" means the strings are the same after normalizing whitespace.
- * Normalization involves:
- * 1. Trimming leading and trailing whitespace.
- * 2. Collapsing multiple consecutive whitespace characters (spaces, tabs, newlines)
- *    into a single space.
- * This is useful for testing formatted output where the exact spacing is not critical.
- *
- * @param code_block The C code to execute.
- * @param expected_str The string to compare against.
- */
 #define ASSERT_STDOUT_EQUIVALENT(code_block, expected_str) do { \
     _UT_start_capture_stdout(); \
     { code_block; } \
@@ -886,23 +885,13 @@ static void _UT_normalize_string_for_comparison(char* str) {
     actual_normalized[sizeof(actual_normalized) - 1] = '\0'; \
     _UT_normalize_string_for_comparison(expected_normalized); \
     _UT_normalize_string_for_comparison(actual_normalized); \
-    char condition_str[256]; \
-    snprintf(condition_str, sizeof(condition_str), "output of '%s' is equivalent to '%s'", #code_block, #expected_str); \
-    _UT_ASSERT_GENERIC(strcmp(expected_normalized, actual_normalized) == 0, condition_str, (expected_str), (_UT_stdout_capture_buffer)); \
+    if (strcmp(expected_normalized, actual_normalized) != 0) { \
+        char condition_str[256]; \
+        snprintf(condition_str, sizeof(condition_str), "output of '%s' is equivalent to '%s'", #code_block, #expected_str); \
+        _UT_record_failure(__FILE__, __LINE__, condition_str, expected_str, _UT_stdout_capture_buffer); \
+    } \
 } while (0)
 
-/**
- * @brief Asserts that a block of code prints a string that is "similar" to an expected string.
- *
- * This captures the stdout of the code block and calculates a similarity ratio
- * (from 0.0 to 1.0) against the `expected_str` using the Levenshtein distance.
- * The test fails if the calculated similarity is less than `min_similarity`.
- * This is useful for testing output that may have minor, acceptable variations.
- *
- * @param code_block The C code to execute.
- * @param expected_str The string to compare against.
- * @param min_similarity The minimum acceptable similarity ratio (e.g., 0.9f for 90%).
- */
 #define ASSERT_STDOUT_SIMILAR(code_block, expected_str, min_similarity) do { \
     _UT_start_capture_stdout(); \
     { code_block; } \
@@ -910,224 +899,286 @@ static void _UT_normalize_string_for_comparison(char* str) {
     const char* e = (expected_str); \
     float actual_similarity = _ut_calculate_similarity_ratio(e, _UT_stdout_capture_buffer); \
     if (actual_similarity < (min_similarity)) { \
-        char expected_buf[256]; \
+        char expected_buf[256], actual_buf[sizeof(_UT_stdout_capture_buffer) + 128], condition_str[256]; \
         snprintf(expected_buf, sizeof(expected_buf), "A string with at least %.2f%% similarity to \"%s\"", (min_similarity) * 100.0f, e); \
-        char actual_buf[sizeof(_UT_stdout_capture_buffer) + 128]; \
         snprintf(actual_buf, sizeof(actual_buf), "A string with %.2f%% similarity: \"%s\"", actual_similarity * 100.0f, _UT_stdout_capture_buffer); \
-        char condition_str[256]; \
         snprintf(condition_str, sizeof(condition_str), "similarity(output_of(%s), \"%s\") >= %.2f", #code_block, #expected_str, (min_similarity)); \
-        _UT_ASSERT_GENERIC(0, condition_str, expected_buf, actual_buf); \
+        _UT_record_failure(__FILE__, __LINE__, condition_str, expected_buf, actual_buf); \
     } \
 } while (0)
 
 #ifdef UNIT_TEST_IMPLEMENTATION
 /*============================================================================*/
-/* SECTION 7: THE UT_RUN_ALL_TESTS IMPLEMENTATION (FULL VERSION)                 */
+/* SECTION 7: THE UT_RUN_ALL_TESTS IMPLEMENTATION (FULL VERSION)              */
 /*============================================================================*/
+
+// --- Helper functions for serializing/deserializing test results ---
+// These are simple text-based functions for IPC between parent and child.
+static void _UT_serialize_result(FILE* stream, _UT_TestResult* result) {
+    fprintf(stream, "status=%d\n", result->status);
+    _UT_AssertionFailure* f = result->failures;
+    while(f) {
+        // A simple serialization format: key=value pairs, failures are pipe-delimited
+        fprintf(stream, "failure=%s|%d|%s|%s|%s\n", f->file, f->line, f->condition_str, f->expected_str ? f->expected_str : "", f->actual_str ? f->actual_str : "");
+        f = f->next;
+    }
+    fprintf(stream, "end_of_data\n");
+}
+
+static _UT_TestResult* _UT_deserialize_result(const char* buffer, _UT_TestInfo* test_info) {
+    _UT_mem_tracking_is_active = 0;
+    _UT_TestResult* result = (_UT_TestResult*)calloc(1, sizeof(_UT_TestResult));
+    result->suite_name = test_info->suite_name;
+    result->test_name = test_info->test_name;
+    
+    char line[4096]; // Increased line buffer size
+    const char* p = buffer;
+    while(p && *p) {
+        const char* next_p = strchr(p, '\n');
+        size_t len = next_p ? (size_t)(next_p - p) : strlen(p);
+        if (len >= sizeof(line)) len = sizeof(line) - 1;
+        strncpy(line, p, len);
+        line[len] = '\0';
+        p = next_p ? next_p + 1 : NULL;
+
+        if (strncmp(line, "status=", 7) == 0) {
+            result->status = (_UT_TestStatus)atoi(line + 7);
+        } else if (strncmp(line, "failure=", 8) == 0) {
+             _UT_AssertionFailure* f = (_UT_AssertionFailure*)calloc(1, sizeof(_UT_AssertionFailure));
+             _UT_AssertionFailure* tail = NULL; // To keep original failure order
+             char* part = line + 8;
+             char* next_part = strchr(part, '|'); if(next_part) { *next_part = '\0'; f->file = _UT_strdup(part); part = next_part+1;}
+             next_part = strchr(part, '|'); if(next_part) { *next_part = '\0'; f->line = atoi(part); part = next_part+1;}
+             next_part = strchr(part, '|'); if(next_part) { *next_part = '\0'; f->condition_str = _UT_strdup(part); part = next_part+1;}
+             next_part = strchr(part, '|'); if(next_part) { *next_part = '\0'; f->expected_str = _UT_strdup(part); part = next_part+1;}
+             f->actual_str = _UT_strdup(part);
+             
+             // Append to list to preserve order
+             if (!result->failures) {
+                 result->failures = f;
+             } else {
+                 tail = result->failures;
+                 while(tail->next) tail = tail->next;
+                 tail->next = f;
+             }
+        }
+    }
+    _UT_mem_tracking_is_active = 1;
+    return result;
+}
+
+// --- Memory management for the result data model ---
+static void _UT_free_test_result(_UT_TestResult* tr) {
+    if (!tr) return;
+    _UT_AssertionFailure* f = tr->failures;
+    while (f) {
+        _UT_AssertionFailure* next_f = f->next;
+        free(f->file); free(f->condition_str); free(f->expected_str); free(f->actual_str); free(f);
+        f = next_f;
+    }
+    free(tr->captured_output);
+    free(tr);
+}
+
 
 // Internal function to run all tests. Use the UT_RUN_ALL_TESTS() macro in your main function.
 int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]);
 
-/**
- * @brief Runs all registered test cases.
- *
- * This macro should be called from the `main` function of your test executable.
- * It discovers and executes all tests defined with `TEST_CASE` and `TEST_DEATH_CASE`,
- * summarizes the results, and returns an exit code.
- *
- * @return 0 if all tests pass, 1 otherwise.
- */
 #define UT_RUN_ALL_TESTS() _UT_RUN_ALL_TESTS_impl(argc, argv)
 
 #ifdef _WIN32
 // ============================================================================
-// VERSION FOR WINDOWS
+// REFACTORED PROCESS RUNNER FOR WINDOWS
 // ============================================================================
-static int _UT_run_process_win(_UT_TestInfo* test, const char* executable_path, char* stderr_buffer) {
+static _UT_TestResult* _UT_run_process_win(_UT_TestInfo* test, const char* executable_path) {
     char command_line[2048];
     snprintf(command_line, sizeof(command_line), "\"%s\" --run_test \"%s\" \"%s\"", executable_path, test->suite_name, test->test_name);
     HANDLE h_read = NULL, h_write = NULL;
     SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-    if (!CreatePipe(&h_read, &h_write, &sa, 0)) { snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "CreatePipe failed."); return -1; }
+    if (!CreatePipe(&h_read, &h_write, &sa, 0)) { /* Handle error */ return NULL; }
+    
     STARTUPINFOA si; ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si);
     si.hStdError = h_write; si.hStdOutput = h_write; si.dwFlags |= STARTF_USESTDHANDLES;
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
+    
     if (!CreateProcessA(NULL, command_line, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-        snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: CreateProcess failed (error %lu).", KRED, KNRM, GetLastError());
-        CloseHandle(h_read); CloseHandle(h_write); return 0;
+        CloseHandle(h_read); CloseHandle(h_write); return NULL;
     }
     CloseHandle(h_write);
-    DWORD wait_result = WaitForSingleObject(pi.hProcess, UT_TEST_TIMEOUT_SECONDS * 1000);
-    DWORD bytes_read = 0; ReadFile(h_read, stderr_buffer, _UT_STDERR_BUFFER_SIZE - 1, &bytes_read, NULL);
-    stderr_buffer[bytes_read] = '\0'; // Null-terminate the buffer
 
+    char output_buffer[_UT_SERIALIZATION_BUFFER_SIZE] = {0};
+    _UT_TestResult* result = (_UT_TestResult*)calloc(1, sizeof(_UT_TestResult));
+    result->suite_name = test->suite_name; result->test_name = test->test_name;
+
+    DWORD wait_result = WaitForSingleObject(pi.hProcess, UT_TEST_TIMEOUT_SECONDS * 1000);
     if (wait_result == WAIT_TIMEOUT) {
         TerminateProcess(pi.hProcess, 1);
-        snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exceeded timeout of %d seconds.", KRED, KNRM, UT_TEST_TIMEOUT_SECONDS);
-        return 0;
+        result->status = _UT_STATUS_TIMEOUT;
+        result->captured_output = _UT_strdup("Test exceeded timeout.");
+        CloseHandle(pi.hProcess); CloseHandle(pi.hThread); CloseHandle(h_read);
+        return result;
     }
-    
-    DWORD exit_code; GetExitCodeProcess(pi.hProcess, &exit_code);
-    
-    if (test->death_expect) {
-        const _UT_DeathExpect* de = test->death_expect;
-        int msg_ok = 1;
-        int exit_ok = 1;
 
-        float similarity = 0.0f;
-        if (de->expected_msg) {
-            similarity = _ut_calculate_similarity_ratio(de->expected_msg, stderr_buffer);
-            if (similarity < de->min_similarity) {
-                msg_ok = 0;
-            }
-        }
-        
-        if (de->expected_exit_code != -1 && exit_code != (DWORD)de->expected_exit_code) {
-            exit_ok = 0;
-        }
+    DWORD bytes_read = 0;
+    ReadFile(h_read, output_buffer, sizeof(output_buffer) - 1, &bytes_read, NULL);
+    output_buffer[bytes_read] = '\0';
+    result->captured_output = _UT_strdup(output_buffer);
 
-        if (exit_code != 0 && msg_ok && exit_ok) {
-            return 2; // Death Test PASSED
+    DWORD exit_code;
+    GetExitCodeProcess(pi.hProcess, &exit_code);
+    CloseHandle(pi.hProcess); CloseHandle(pi.hThread); CloseHandle(h_read);
+
+    const _UT_DeathExpect* de = test->death_expect;
+    if (de) {
+        int exit_ok = 1, msg_ok = 1;
+        if (de->expected_exit_code != -1 && exit_code != (DWORD)de->expected_exit_code) exit_ok = 0;
+        if (de->expected_msg && _ut_calculate_similarity_ratio(de->expected_msg, output_buffer) < de->min_similarity) msg_ok = 0;
+
+        if (exit_code != 0 && exit_ok && msg_ok) {
+            result->status = _UT_STATUS_DEATH_TEST_PASSED;
         } else {
-            // --- DETAILED ERROR MESSAGE CONSTRUCTION ---
-            char temp_buffer[2048];
-            char reason_buffer[1024] = {0};
-
-            if (exit_code == 0) {
-                strcat(reason_buffer, "\n   - Process finished successfully (exit code 0), but a failure was expected.");
-            }
-            if (!exit_ok) {
-                char part[256];
-                snprintf(part, sizeof(part), "\n   - Incorrect exit code. Expected: %d, Got: %lu",
-                         de->expected_exit_code, exit_code);
-                strcat(reason_buffer, part);
-            }
-            if (!msg_ok && de->expected_msg) {
-                char part[512];
-                snprintf(part, sizeof(part), "\n   - Message mismatch (Similarity: %.2f%%, Required minimum: %.2f%%).\n     Expected (approx): \"%s\"",
-                         similarity * 100.0f, de->min_similarity * 100.0f, de->expected_msg);
-                strcat(reason_buffer, part);
-            }
-
-            snprintf(temp_buffer, sizeof(temp_buffer), "\n   %sTEST FAILED!%s\n   Reason: Death test criteria not met.%s",
-                     KRED, KNRM, reason_buffer);
-
-            if (bytes_read > 0) {
-                strcat(temp_buffer, "\n   Got output:\n---\n");
-                strcat(temp_buffer, stderr_buffer);
-                strcat(temp_buffer, "\n---");
-            }
-            strcpy(stderr_buffer, temp_buffer);
-            return 0;
+            result->status = _UT_STATUS_FAILED;
         }
+        return result;
     }
     
-    if (exit_code == 0) return 1; // Normal pass
-    if (strlen(stderr_buffer) == 0) { snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exited with code 0x%X.", KRED, KNRM, (unsigned int)exit_code); }
-    return 0;
+    if (exit_code >= 120 && exit_code <= 122) { // Our custom fatal error codes
+        result->status = _UT_STATUS_CRASHED;
+        return result;
+    }
+
+    // If we got here, it was a normal test. We free the preliminary result and deserialize the real one.
+    free(result->captured_output);
+    free(result);
+    _UT_TestResult* final_result = _UT_deserialize_result(output_buffer, test);
+    final_result->captured_output = _UT_strdup(output_buffer); // Store raw output for debugging
+    return final_result;
 }
 
 #else // POSIX
 // ============================================================================
-// VERSION FOR POSIX (LINUX, MACOS)
+// REFACTORED PROCESS RUNNER FOR POSIX
 // ============================================================================
 static int _UT_wait_with_timeout(pid_t pid, int* status, int timeout_sec) { struct timespec start, now, sleep_ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 }; clock_gettime(CLOCK_MONOTONIC, &start); for (;;) { pid_t r = waitpid(pid, status, WNOHANG); if (r == pid) return 0; if (r == -1 && errno != EINTR) return -1; clock_gettime(CLOCK_MONOTONIC, &now); if ((now.tv_sec - start.tv_sec) >= timeout_sec) { kill(pid, SIGKILL); while (waitpid(pid, status, 0) == -1 && errno == EINTR); return 1; } nanosleep(&sleep_ts, NULL); } }
-static int _UT_run_process_posix(_UT_TestInfo* test, const char* executable_path, char* stderr_buffer) {
-    int err_pipe[2] = {-1, -1};
-    if (pipe(err_pipe) == -1) { perror("pipe"); return -1; }
+
+static _UT_TestResult* _UT_run_process_posix(_UT_TestInfo* test, const char* executable_path) {
+    int out_pipe[2]; if (pipe(out_pipe) == -1) return NULL;
     pid_t pid = fork();
-    if (pid == -1) { perror("fork"); close(err_pipe[0]); close(err_pipe[1]); return -1; }
-    if (pid == 0) {
-        close(err_pipe[0]); dup2(err_pipe[1], STDOUT_FILENO); dup2(err_pipe[1], STDERR_FILENO); close(err_pipe[1]);
+    if (pid == -1) { close(out_pipe[0]); close(out_pipe[1]); return NULL; }
+
+    if (pid == 0) { // Child
+        close(out_pipe[0]);
+        dup2(out_pipe[1], STDOUT_FILENO); dup2(out_pipe[1], STDERR_FILENO);
+        close(out_pipe[1]);
         char* child_argv[] = {(char*)executable_path, "--run_test", (char*)test->suite_name, (char*)test->test_name, NULL};
         execv(executable_path, child_argv);
         perror("execv failed"); exit(127);
-    } else {
-        close(err_pipe[1]); int status; int r = _UT_wait_with_timeout(pid, &status, UT_TEST_TIMEOUT_SECONDS);
-        ssize_t off = 0, bytes_read;
-        int flags = fcntl(err_pipe[0], F_GETFL); fcntl(err_pipe[0], F_SETFL, flags | O_NONBLOCK);
-        while ((bytes_read = read(err_pipe[0], stderr_buffer + off, _UT_STDERR_BUFFER_SIZE - 1 - off)) > 0) { off += bytes_read; }
-        stderr_buffer[off] = '\0'; // Null-terminate the buffer
-        close(err_pipe[0]);
+    } else { // Parent
+        close(out_pipe[1]);
+        char output_buffer[_UT_SERIALIZATION_BUFFER_SIZE] = {0};
+        int status;
+        
+        _UT_TestResult* result = (_UT_TestResult*)calloc(1, sizeof(_UT_TestResult));
+        result->suite_name = test->suite_name; result->test_name = test->test_name;
 
-        if (r == 1) { snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exceeded timeout of %d seconds.", KRED, KNRM, UT_TEST_TIMEOUT_SECONDS); return 0; }
-        else if (r == -1) { perror("waitpid"); return -1; }
+        int r = _UT_wait_with_timeout(pid, &status, UT_TEST_TIMEOUT_SECONDS);
+        ssize_t bytes_read = read(out_pipe[0], output_buffer, sizeof(output_buffer) - 1);
+        if (bytes_read > 0) output_buffer[bytes_read] = '\0';
+        close(out_pipe[0]);
+        
+        result->captured_output = _UT_strdup(output_buffer);
 
-        if (test->death_expect) {
-            const _UT_DeathExpect* de = test->death_expect;
+        if (r == 1) { // Timeout
+            result->status = _UT_STATUS_TIMEOUT;
+            return result;
+        }
+
+        const _UT_DeathExpect* de = test->death_expect;
+        if (de) {
             int sig_ok = 1, exit_ok = 1, msg_ok = 1;
-            
-            int received_signal = -1;
-            int received_exit_code = -1;
-
             if (WIFSIGNALED(status)) {
-                received_signal = WTERMSIG(status);
-                if (de->expected_signal != 0 && received_signal != de->expected_signal) sig_ok = 0;
-                if (de->expected_exit_code != -1) exit_ok = 0; // Expected exit code, not signal
+                if (de->expected_signal == 0 || WTERMSIG(status) != de->expected_signal) sig_ok = 0;
             } else if (WIFEXITED(status)) {
-                received_exit_code = WEXITSTATUS(status);
-                if (de->expected_exit_code != -1 && received_exit_code != de->expected_exit_code) exit_ok = 0;
-                if (de->expected_signal != 0) sig_ok = 0; // Expected signal, not exit code
+                if (de->expected_exit_code == -1 || WEXITSTATUS(status) != de->expected_exit_code) exit_ok = 0;
+            } else { sig_ok = exit_ok = 0; }
+            if (de->expected_msg && _ut_calculate_similarity_ratio(de->expected_msg, output_buffer) < de->min_similarity) msg_ok = 0;
+            
+            if ((WIFSIGNALED(status) || WIFEXITED(status)) && sig_ok && exit_ok && msg_ok) {
+                result->status = _UT_STATUS_DEATH_TEST_PASSED;
             } else {
-                sig_ok = 0; exit_ok = 0;
+                result->status = _UT_STATUS_FAILED;
             }
-
-            float similarity = 0.0f;
-            if (de->expected_msg) {
-                similarity = _ut_calculate_similarity_ratio(de->expected_msg, stderr_buffer);
-                if (similarity < de->min_similarity) {
-                    msg_ok = 0;
-                }
-            }
-
-            if (sig_ok && exit_ok && msg_ok && (WIFSIGNALED(status) || WIFEXITED(status))) {
-                return 2; // Death Test PASSED
-            } else {
-                // --- DETAILED ERROR MESSAGE CONSTRUCTION ---
-                char temp_buffer[2048];
-                char reason_buffer[1024] = {0};
-
-                if (!sig_ok) {
-                    char part[256];
-                    snprintf(part, sizeof(part), "\n   - Incorrect signal. Expected: %d (%s), Got: %d (%s)",
-                             de->expected_signal, strsignal(de->expected_signal),
-                             received_signal, received_signal != -1 ? strsignal(received_signal) : "N/A (terminated by exit code)");
-                    strcat(reason_buffer, part);
-                }
-                if (!exit_ok) {
-                    char part[256];
-                    snprintf(part, sizeof(part), "\n   - Incorrect exit code. Expected: %d, Got: %d",
-                             de->expected_exit_code, received_exit_code);
-                    strcat(reason_buffer, part);
-                }
-                if (!msg_ok && de->expected_msg) {
-                    char part[512];
-                    snprintf(part, sizeof(part), "\n   - Message mismatch (Similarity: %.2f%%, Required minimum: %.2f%%).\n     Expected (approx): \"%s\"",
-                             similarity * 100.0f, de->min_similarity * 100.0f, de->expected_msg);
-                    strcat(reason_buffer, part);
-                }
-
-                snprintf(temp_buffer, sizeof(temp_buffer), "\n   %sTEST FAILED!%s\n   Reason: Death test criteria not met.%s",
-                         KRED, KNRM, reason_buffer);
-                
-                if (off > 0) {
-                    strcat(temp_buffer, "\n   Got output:\n---\n");
-                    strcat(temp_buffer, stderr_buffer);
-                    strcat(temp_buffer, "\n---");
-                }
-                strcpy(stderr_buffer, temp_buffer);
-                return 0;
-            }
+            return result;
         }
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return 1;
-        if (strlen(stderr_buffer) == 0) {
-            if (WIFSIGNALED(status)) { snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Terminated by signal: %s.", KRED, KNRM, strsignal(WTERMSIG(status))); }
-            else { snprintf(stderr_buffer, _UT_STDERR_BUFFER_SIZE, "\n   %sTEST FAILED!%s\n   Reason: Exited with code %d.", KRED, KNRM, WEXITSTATUS(status)); }
+
+        if (WIFEXITED(status) && WEXITSTATUS(status) >= 120 && WEXITSTATUS(status) <= 122) {
+            result->status = _UT_STATUS_CRASHED; // Our custom fatal error codes
+            return result;
+        } else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+             result->status = _UT_STATUS_CRASHED; // Generic crash/signal
+             return result;
         }
-        return 0;
+        
+        free(result->captured_output); free(result);
+        _UT_TestResult* final_result = _UT_deserialize_result(output_buffer, test);
+        final_result->captured_output = _UT_strdup(output_buffer);
+        return final_result;
     }
 }
 #endif
+
+/*============================================================================*/
+/* SECTION 8: REPORTER INTERFACE AND IMPLEMENTATIONS                          */
+/*============================================================================*/
+
+typedef struct {
+    void (*on_run_start)(const _UT_TestRun* run);
+    void (*on_suite_start)(const _UT_SuiteResult* suite);
+    void (*on_test_finish)(const _UT_TestResult* test);
+    void (*on_suite_finish)(const _UT_SuiteResult* suite);
+    void (*on_run_finish)(const _UT_TestRun* run, _UT_SuiteResult** all_suites, int suite_count);
+} _UT_Reporter;
+
+
+// --- CONSOLE REPORTER IMPLEMENTATION ---
+
+static void _UT_console_on_suite_start(const _UT_SuiteResult* suite) {
+    printf("%sTests for %s%s\n", KBLU, suite->name, KNRM);
+    printf("%s", KBLU);
+    for(int i=0; i < (int)(strlen(suite->name) + 10); ++i) printf("=");
+    printf("%s", KNRM);
+}
+
+static void _UT_console_on_test_finish(const _UT_TestResult* test) {
+    switch(test->status) {
+        case _UT_STATUS_PASSED:
+            printf("\n   %sPASSED%s (%.2f ms)\n", KGRN, KNRM, test->duration_ms);
+            break;
+        case _UT_STATUS_DEATH_TEST_PASSED:
+            printf("\n   %sPASSED (death test)%s (%.2f ms)\n", KGRN, KNRM, test->duration_ms);
+            break;
+        case _UT_STATUS_FAILED:
+            printf("\n   %sFAILED%s (%.2f ms)\n", KRED, KNRM, test->duration_ms);
+            _UT_AssertionFailure* f = test->failures;
+            while(f) {
+                fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", f->condition_str, f->file, f->line);
+                if (f->expected_str) fprintf(stderr, "   Expected: %s%s%s\n", KGRN, f->expected_str, KNRM);
+                if (f->actual_str)   fprintf(stderr, "   Got: %s%s%s\n", KRED, f->actual_str, KNRM);
+                f = f->next;
+            }
+            break;
+        case _UT_STATUS_CRASHED:
+            printf("\n   %sCRASHED%s (%.2f ms)\n", KRED, KNRM, test->duration_ms);
+            fprintf(stderr, "   Test process terminated unexpectedly.\n   Output:\n---\n%s\n---\n", test->captured_output ? test->captured_output : " (none)");
+            break;
+        case _UT_STATUS_TIMEOUT:
+             printf("\n   %sTIMEOUT%s (%.2f ms)\n", KYEL, KNRM, test->duration_ms);
+             break;
+        default:
+             printf("\n   %sUNKNOWN STATUS%s\n", KYEL, KNRM);
+             break;
+    }
+}
 
 static void _UT_print_colored_details(const char* details) {
     printf("Details: ");
@@ -1138,35 +1189,90 @@ static void _UT_print_colored_details(const char* details) {
     }
 }
 
-static void _UT_finalize_suite(const char* name, int total, int failed, const char* details) {
-    if (total == 0) return;
-    printf("\n\n%sPassed%s: %s%d%s, %sFailed%s: %s%d%s, Total: %d, ", KGRN, KNRM, KGRN, total - failed, KNRM, KRED, KNRM, KRED, failed, KNRM, total);
-    _UT_print_colored_details(details);
+static void _UT_console_on_suite_finish(const _UT_SuiteResult* suite) {
+    if (suite->total_tests == 0) return;
+    int failed = suite->total_tests - suite->passed_tests;
+    printf("\n%sPassed%s: %s%d%s, %sFailed%s: %s%d%s, Total: %d, ", KGRN, KNRM, KGRN, suite->passed_tests, KNRM, KRED, KNRM, KRED, failed, KNRM, suite->total_tests);
+    _UT_print_colored_details(suite->details);
     printf("\n\n");
-    if (_UT_suite_count < _UT_MAX_SUITES) {
-        _UT_all_suite_results[_UT_suite_count].passed = total - failed;
-        _UT_all_suite_results[_UT_suite_count].total = total;
-        strncpy(_UT_all_suite_results[_UT_suite_count].details, details, _UT_SUITE_RESULTS_DETAILS_SIZE -1);
-        _UT_all_suite_results[_UT_suite_count].details[_UT_SUITE_RESULTS_DETAILS_SIZE -1] = '\0';
-    }
-    _UT_suite_count++;
 }
 
+static void _UT_console_on_run_finish(const _UT_TestRun* run, _UT_SuiteResult** all_suites, int suite_count) {
+    printf("%s========================================%s\n", KBLU, KNRM);
+    printf("%s Overall Summary%s\n", KBLU, KNRM);
+    printf("%s========================================%s\n", KBLU, KNRM);
+    printf("Suites run:    %d\n", run->total_suites);
+    printf("Total tests:   %d\n", run->total_tests);
+    printf("%sPassed:        %d%s\n", KGRN, run->passed_tests, KNRM);
+    printf("%sFailed:        %d%s\n", KRED, run->total_tests - run->passed_tests, KNRM);
+    printf("Success rate:  %.2f%%\n", run->total_tests > 0 ? ((double)run->passed_tests / run->total_tests) * 100.0 : 100.0);
+    printf("Total time:    %.2f ms\n", run->total_duration_ms);
+    printf("%s========================================%s\n", KBLU, KNRM);
+
+    if(_UT_is_ci_mode) {
+        printf("\n");
+        for(int i=0; i < suite_count; ++i) { printf("%d/%d%s", all_suites[i]->passed_tests, all_suites[i]->total_tests, i == suite_count - 1 ? "" : " "); }
+        printf("\n");
+        for(int i=0; i < suite_count; ++i) { for(int j=0; j < all_suites[i]->total_tests; ++j) { printf("%c%s", all_suites[i]->details[j], j == all_suites[i]->total_tests - 1 ? "" : ";"); } if (i < suite_count - 1) printf(";;"); }
+        printf("\n");
+        for(int i=0; i < suite_count; ++i) { printf("%d%s", all_suites[i]->passed_tests, i == suite_count - 1 ? "" : ";"); }
+        printf("\n");
+        for(int i=0; i < suite_count; ++i) { double r = all_suites[i]->total_tests > 0 ? (double)all_suites[i]->passed_tests / all_suites[i]->total_tests : 1.0; printf("%.3f%s", r, i == suite_count - 1 ? "" : ";"); }
+        printf("\n");
+    }
+}
+
+
+// The instance of the console reporter.
+static _UT_Reporter _UT_ConsoleReporter = {
+    .on_run_start = NULL, // No action needed
+    .on_suite_start = _UT_console_on_suite_start,
+    .on_test_finish = _UT_console_on_test_finish,
+    .on_suite_finish = _UT_console_on_suite_finish,
+    .on_run_finish = _UT_console_on_run_finish,
+};
+
+
+/*============================================================================*/
+/* SECTION 9: MAIN TEST RUNNER                                                */
+/*============================================================================*/
+
 int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
-    // Handle the internal --run_test flag for child processes
+    // ================== CHILD PROCESS EXECUTION ==================
     if (argc == 4 && strcmp(argv[1], "--run_test") == 0) {
         _UT_TestInfo* current = _UT_registry_head;
         while (current) {
             if (strcmp(current->suite_name, argv[2]) == 0 && strcmp(current->test_name, argv[3]) == 0) {
                 setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0);
+                
                 #ifdef UT_MEMORY_TRACKING_ENABLED
+                _UT_mem_tracking_is_active = 0;
+                #endif
+                g_UT_current_test_result = (_UT_TestResult*)calloc(1, sizeof(_UT_TestResult));
+                #ifdef UT_MEMORY_TRACKING_ENABLED
+                _UT_mem_tracking_is_active = 1;
                 _UT_init_memory_tracking();
                 #endif
+
                 current->func();
-                 #ifdef UT_MEMORY_TRACKING_ENABLED
-                if (_UT_leak_UT_check_enabled) {
-                    _UT_check_for_leaks();
+
+                #ifdef UT_MEMORY_TRACKING_ENABLED
+                if (_UT_leak_UT_check_enabled) { _UT_check_for_leaks(); }
+                #endif
+                
+                if (g_UT_current_test_result->failures == NULL) {
+                    g_UT_current_test_result->status = _UT_STATUS_PASSED;
+                } else {
+                    g_UT_current_test_result->status = _UT_STATUS_FAILED;
                 }
+                _UT_serialize_result(stdout, g_UT_current_test_result);
+
+                #ifdef UT_MEMORY_TRACKING_ENABLED
+                _UT_mem_tracking_is_active = 0;
+                #endif
+                _UT_free_test_result(g_UT_current_test_result);
+                #ifdef UT_MEMORY_TRACKING_ENABLED
+                _UT_mem_tracking_is_active = 1;
                 #endif
                 return 0;
             }
@@ -1175,80 +1281,107 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char* argv[]) {
         fprintf(stderr, "Error: Test '%s.%s' not found in registry.\n", argv[2], argv[3]); return 1;
     }
 
-    // --- NEW: Parse for --suite filter flag ---
+    // ================== PARENT PROCESS (TEST RUNNER) ==================
+    
+    _UT_init_colors();
+    _UT_is_ci_mode = 1; // getenv("CI") != NULL; // Enable CI mode if CI env var is set
+    _UT_Reporter* reporter = &_UT_ConsoleReporter; // Default reporter
+
     const char* suite_filter = NULL;
     for (int i = 1; i < argc; ++i) {
-        if (strncmp(argv[i], "--suite=", 8) == 0) {
-            suite_filter = argv[i] + 8;
-            break; 
-        }
+        if (strncmp(argv[i], "--suite=", 8) == 0) { suite_filter = argv[i] + 8; break; }
     }
+    
+    _UT_TestRun test_run = {0};
+    _UT_SuiteResult* all_suites_array[_UT_MAX_SUITES] = {0};
 
-    _UT_is_ci_mode = 1; // argc > 1;
-    int total = 0, passed = 0, failed = 0;
-    int suite_total = 0, suite_failed = 0;
-    char suite_results[_UT_SUITE_RESULTS_DETAILS_SIZE];
-    int suite_results_idx = 0;
-    const char* current_suite = "";
     const char* executable_path = argv[0];
-    _UT_init_colors();
-    _UT_TestInfo* current_test = _UT_registry_head;
+    _UT_TestInfo* current_test_info = _UT_registry_head;
+    
+    _UT_SuiteResult* current_suite_result = NULL;
+    const char* current_suite_name = "";
 
-    while (current_test) {
-        // --- MODIFIED: Only run the test if it matches the suite filter (or if no filter is set) ---
-        if (!suite_filter || strcmp(current_test->suite_name, suite_filter) == 0) {
-            if (strcmp(current_suite, current_test->suite_name) != 0) {
-                _UT_finalize_suite(current_suite, suite_total, suite_failed, suite_results);
-                current_suite = current_test->suite_name;
-                printf("%sTests for %s%s\n", KBLU, current_suite, KNRM);
-                for(int i=0; i < (int)(strlen(current_suite) + 10); ++i) printf("%s=%s", KBLU, KNRM);
-                suite_total = 0; suite_failed = 0; suite_results_idx = 0; 
-                for(int i=0; i<_UT_SUITE_RESULTS_DETAILS_SIZE; i++) suite_results[i] = '\0';
+    struct timespec run_start_time, run_end_time;
+    clock_gettime(CLOCK_MONOTONIC, &run_start_time);
+
+    if (reporter->on_run_start) reporter->on_run_start(&test_run);
+
+    while (current_test_info) {
+        if (!suite_filter || strcmp(current_test_info->suite_name, suite_filter) == 0) {
+            // If suite has changed, finalize the old one and start a new one
+            if (strcmp(current_suite_name, current_test_info->suite_name) != 0) {
+                if (current_suite_result && reporter->on_suite_finish) {
+                    reporter->on_suite_finish(current_suite_result);
+                }
+                
+                current_suite_name = current_test_info->suite_name;
+                current_suite_result = (_UT_SuiteResult*)calloc(1, sizeof(_UT_SuiteResult));
+                current_suite_result->name = current_suite_name;
+                
+                // Add to the flat array for final CI summary
+                if(test_run.total_suites < _UT_MAX_SUITES) {
+                    all_suites_array[test_run.total_suites] = current_suite_result;
+                }
+                test_run.total_suites++;
+
+                if (reporter->on_suite_start) reporter->on_suite_start(current_suite_result);
             }
-            printf("\n%s: ", current_test->test_name);
+            
+            // Print progress indicator
+            printf("\n%s: ", current_test_info->test_name);
             fflush(stdout);
-            char stderr_buffer[_UT_STDERR_BUFFER_SIZE] = {0};
+            
+            struct timespec test_start_time, test_end_time;
+            clock_gettime(CLOCK_MONOTONIC, &test_start_time);
+
             #ifdef _WIN32
-                int test_result = _UT_run_process_win(current_test, executable_path, stderr_buffer);
+                _UT_TestResult* result = _UT_run_process_win(current_test_info, executable_path);
             #else
-                int test_result = _UT_run_process_posix(current_test, executable_path, stderr_buffer);
+                _UT_TestResult* result = _UT_run_process_posix(current_test_info, executable_path);
             #endif
-            if (test_result > 0) { // 1 for pass, 2 for death test pass
-                if (test_result == 2) { printf("\n   %sTEST PASSED SUCCESSFULLY!%s (Abnormal exit expected)", KGRN, KNRM); }
-                else { printf("\n   %sTEST PASSED SUCCESSFULLY!%s", KGRN, KNRM); }
-                passed++; if (suite_results_idx < _UT_SUITE_RESULTS_DETAILS_SIZE - 1) suite_results[suite_results_idx++] = '+';
-            } else { // 0 for fail, -1 for error
-                failed++; suite_failed++; if (suite_results_idx < _UT_SUITE_RESULTS_DETAILS_SIZE - 1) suite_results[suite_results_idx++] = '-';
-                printf("%s", stderr_buffer);
+            
+            clock_gettime(CLOCK_MONOTONIC, &test_end_time);
+            result->duration_ms = (test_end_time.tv_sec - test_start_time.tv_sec) * 1000.0 + (test_end_time.tv_nsec - test_start_time.tv_nsec) / 1000000.0;
+            
+            // Update stats
+            current_suite_result->total_tests++;
+            test_run.total_tests++;
+            if (result->status == _UT_STATUS_PASSED || result->status == _UT_STATUS_DEATH_TEST_PASSED) {
+                current_suite_result->passed_tests++;
+                test_run.passed_tests++;
+                if (current_suite_result->details_idx < _UT_SUITE_RESULTS_DETAILS_SIZE - 1) {
+                    current_suite_result->details[current_suite_result->details_idx++] = '+';
+                }
+            } else {
+                if (current_suite_result->details_idx < _UT_SUITE_RESULTS_DETAILS_SIZE - 1) {
+                    current_suite_result->details[current_suite_result->details_idx++] = '-';
+                }
             }
-            total++; suite_total++;
+            
+            // Report and free immediately
+            if(reporter->on_test_finish) reporter->on_test_finish(result);
+            _UT_free_test_result(result);
         }
-        current_test = current_test->next;
+        current_test_info = current_test_info->next;
     }
-    suite_results[suite_results_idx] = '\0';
-    _UT_finalize_suite(current_suite, suite_total, suite_failed, suite_results);
-    double rate = total > 0 ? ((double)passed / total) * 100.0 : 100.0;
-    printf("%s========================================%s\n", KBLU, KNRM);
-    printf("%s Overall Summary%s\n", KBLU, KNRM);
-    printf("%s========================================%s\n", KBLU, KNRM);
-    printf("Suites run:    %d\n", _UT_suite_count);
-    printf("Total tests:   %d\n", total);
-    printf("%sPassed:        %d%s\n", KGRN, passed, KNRM);
-    printf("%sFailed:        %d%s\n", KRED, failed, KNRM);
-    printf("Success rate:  %.2f%%\n", rate);
-    printf("%s========================================%s\n", KBLU, KNRM);
-    if(_UT_is_ci_mode) {
-        printf("\n");
-        for(int i=0; i < _UT_suite_count; ++i) { printf("%d/%d%s", _UT_all_suite_results[i].passed, _UT_all_suite_results[i].total, i == _UT_suite_count - 1 ? "" : " "); }
-        printf("\n");
-        for(int i=0; i < _UT_suite_count; ++i) { for(int j=0; j < _UT_all_suite_results[i].total; ++j) { printf("%c%s", _UT_all_suite_results[i].details[j], j == _UT_all_suite_results[i].total - 1 ? "" : ";"); } if (i < _UT_suite_count - 1) printf(";;"); }
-        printf("\n");
-        for(int i=0; i < _UT_suite_count; ++i) { printf("%d%s", _UT_all_suite_results[i].passed, i == _UT_suite_count - 1 ? "" : ";"); }
-        printf("\n");
-        for(int i=0; i < _UT_suite_count; ++i) { double r = _UT_all_suite_results[i].total > 0 ? (double)_UT_all_suite_results[i].passed / _UT_all_suite_results[i].total : 1.0; printf("%.3f%s", r, i == _UT_suite_count - 1 ? "" : ";"); }
-        printf("\n");
+    
+    // Finalize the very last suite
+    if (current_suite_result && reporter->on_suite_finish) {
+        reporter->on_suite_finish(current_suite_result);
     }
-    return failed > 0 ? 1 : 0;
+    
+    clock_gettime(CLOCK_MONOTONIC, &run_end_time);
+    test_run.total_duration_ms = (run_end_time.tv_sec - run_start_time.tv_sec) * 1000.0 + (run_end_time.tv_nsec - run_start_time.tv_nsec) / 1000000.0;
+    
+    // Final overall summary
+    if (reporter->on_run_finish) reporter->on_run_finish(&test_run, all_suites_array, test_run.total_suites);
+
+    // Cleanup
+    for(int i=0; i < test_run.total_suites; ++i) {
+        free(all_suites_array[i]);
+    }
+    
+    return (test_run.total_tests - test_run.passed_tests) > 0 ? 1 : 0;
 }
 #endif // UNIT_TEST_IMPLEMENTATION
 
