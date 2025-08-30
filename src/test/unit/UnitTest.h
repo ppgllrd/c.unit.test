@@ -4,59 +4,68 @@
 /*                                                                            */
 /* USAGE MODES:                                                               */
 /*                                                                            */
-/* This header can be used in one of four modes, controlled by preprocessor   */
-/* definitions. You should define the desired mode *before* including this    */
-/* header.                                                                    */
+/* This header can be used in several modes, controlled by preprocessor       */
+/* definitions. You should define the desired mode(s) *before* including      */
+/* this header.                                                               */
+/*                                                                            */
+/* The UNIT_TEST_MEMORY_TRACKING definition is an orthogonal flag that        */
+/* exclusively controls whether malloc, free, etc., are overridden.           */
+/*                                                                            */
+/* --- Primary Modes ---                                                      */
 /*                                                                            */
 /* 1. Default Mode (Memory Tracking Only)                                     */
 /*    - How to use: #include "UnitTest.h"                                     */
-/*    - What it does: If no other mode is specified, this mode is equivalent  */
-/*      to UNIT_TEST_MEMORY_TRACKING. It redefines malloc, calloc, realloc,   */
-/*      and free to enable memory leak and corruption detection.              */
-/*    - Use case: Include this header in your regular project source files    */ 
-/*      (.c files) to track their memory usage during tests without exposing  */
-/*      the test-specific macros like ASSERT or TEST_CASE.                    */
+/*    - What it does: Overrides malloc, calloc, realloc, and free to enable   */
+/*      memory leak detection. Test-writing APIs (TEST_CASE, ASSERT) are      */
+/*      not available.                                                        */
+/*    - Use case: Include this in your regular project source files (.c)      */
+/*      to track their memory usage during tests.                             */
 /*                                                                            */
-/* 2. UNIT_TEST_DECLARATION                                                   */
+/* 2. UNIT_TEST_DECLARATION (Writing Tests, No Memory Tracking)               */
 /*    - How to use: #define UNIT_TEST_DECLARATION                             */
 /*                  #include "UnitTest.h"                                     */
-/*    - What it does: Provides all the necessary macros (TEST_CASE, ASSERT,   */
-/*      etc.), type definitions, and function declarations needed to *write*  */
-/*      test files. It does not include the implementation of the test runner.*/
-/*    - Use case: Use this in your `_test.c` files where you define your      */
-/*      tests. This allows multiple test files to be compiled and linked      */
-/*      together.                                                             */
+/*    - What it does: Provides all macros (TEST_CASE, ASSERT) and types       */
+/*      needed to *write* test files. It does NOT override memory functions.  */
+/*    - Use case: Use this in `_test.c` files to define tests without         */
+/*      tracking memory allocations made directly within that file.           */
 /*                                                                            */
-/* 3. UNIT_TEST_MEMORY_TRACKING                                               */
-/*    - How to use: #define UNIT_TEST_MEMORY_TRACKING                         */
-/*                  #include "UnitTest.h"                                     */
-/*    - What it does: Explicitly enables only the memory tracking features.   */
-/*      This is identical to the default mode.                                */
-/*    - Use case: Same as the default mode, but more explicit.                */
-/*                                                                            */
-/* 4. UNIT_TEST_IMPLEMENTATION                                                */
+/* 3. UNIT_TEST_IMPLEMENTATION (Test Runner, No Memory Tracking)              */
 /*    - How to use: #define UNIT_TEST_IMPLEMENTATION                          */
 /*                  #include "UnitTest.h"                                     */
-/*    - What it does: Includes the full implementation of the test runner     */
-/*      (the UT_RUN_ALL_TESTS function), reporters, and all helper functions. */
-/*      This macro automatically enables UNIT_TEST_DECLARATION as well.       */
-/*    - Use case: This must be defined in exactly ONE .c file in your test    */
-/*      build (e.g., in a `main.c` or `test_runner.c`) that contains your     */
-/*      main function which calls UT_RUN_ALL_TESTS().                         */
+/*    - What it does: Includes the full implementation of the test runner.    */
+/*      This automatically enables UNIT_TEST_DECLARATION. It does NOT         */
+/*      override memory functions on its own.                                 */
+/*                                                                            */
+/* --- Combining with UNIT_TEST_MEMORY_TRACKING ---                           */
+/*                                                                            */
+/* You can combine the declaration/implementation modes with memory tracking. */
+/*                                                                            */
+/*   A. UNIT_TEST_DECLARATION + UNIT_TEST_MEMORY_TRACKING                     */
+/*      - What it does: Provides test-writing APIs AND overrides memory       */
+/*        functions.                                                          */
+/*      - Use case: The standard mode for a `_test.c` file, allowing you to   */
+/*        write tests and track their memory usage.                           */
+/*                                                                            */
+/*   B. UNIT_TEST_IMPLEMENTATION + UNIT_TEST_MEMORY_TRACKING                  */
+/*      - What it does: Includes the full test runner implementation AND      */
+/*        overrides memory functions.                                         */
+/*      - Use case: The standard mode for your main test runner file.         */
 /*                                                                            */
 /* Example Project Structure:                                                 */
 /*                                                                            */
 /*   // In my_data_structure.c (your project code)                            */
-/*   #include "UnitTest.h" // Enables memory tracking for this file           */
+/*   #include "UnitTest.h" // Default mode: enables memory function overrides */
 /*   // ... implementation of data structure ...                              */
 /*                                                                            */
 /*   // In test_data_structure.c (a test file)                                */
 /*   #define UNIT_TEST_DECLARATION                                            */
+/*   #define UNIT_TEST_MEMORY_TRACKING // Also track memory in this file      */
 /*   #include "UnitTest.h"                                                    */
 /*   TEST_CASE(MyDS, ShouldDoSomething) { ... }                               */
 /*                                                                            */
 /*   // In main.c (the test runner executable)                                */
 /*   #define UNIT_TEST_IMPLEMENTATION                                         */
+/*   #define UNIT_TEST_MEMORY_TRACKING // Also track memory in the runner     */
 /*   #include "UnitTest.h"                                                    */
 /*   int main(int argc, char* argv[]) {                                       */
 /*       return UT_RUN_ALL_TESTS();                                           */
@@ -77,20 +86,22 @@
 /*============================================================================*/
 /* SECTION 0: MODE SELECTION                                                  */
 /*============================================================================*/
-// If no specific mode is defined, default to memory tracking mode. This is
-// useful for including the header in project source files to track memory
-// without exposing the test APIs.
-#if !defined(UNIT_TEST_DECLARATION) && !defined(UNIT_TEST_MEMORY_TRACKING) && !defined(UNIT_TEST_IMPLEMENTATION)
-#define UT_MEMORY_TRACKING_ENABLED
-#endif
-
 // The implementation requires the declarations.
 #ifdef UNIT_TEST_IMPLEMENTATION
 #define UNIT_TEST_DECLARATION
 #endif
 
-// The implementation and declaration modes enable memory tracking features by default.
-#if defined(UNIT_TEST_DECLARATION) || defined(UNIT_TEST_IMPLEMENTATION)
+// A. Define UNIT_TEST_MEMORY_TRACKING in the default case
+// where neither DECLARATION nor IMPLEMENTATION is defined.
+#if (!defined(UNIT_TEST_DECLARATION) && !defined(UNIT_TEST_IMPLEMENTATION))
+#define UNIT_TEST_MEMORY_TRACKING
+#endif
+
+// B. Define UT_MEMORY_TRACKING_ENABLED if the memory tracking *code* (structs,
+// function definitions) is needed. This is required if we are overriding
+// memory functions OR if we are building the full implementation (which
+// needs to run the leak checker).
+#if defined(UNIT_TEST_MEMORY_TRACKING) || defined(UNIT_TEST_IMPLEMENTATION)
 #define UT_MEMORY_TRACKING_ENABLED
 #endif
 
@@ -125,6 +136,9 @@
     #define UT_TEST_TIMEOUT_SECONDS 2
 #endif
 
+#endif // UNIT_TEST_DECLARATION
+
+#if defined(UNIT_TEST_IMPLEMENTATION)
 #define _UT_STDERR_BUFFER_SIZE 4096
 #define _UT_SUITE_RESULTS_DETAILS_SIZE 1024
 #define _UT_MAX_SUITES 128
@@ -143,13 +157,13 @@ struct _UT_TestInfo {
     _UT_TestInfo* next;
 };
 
-#endif // UNIT_TEST_DECLARATION
+#endif // UNIT_TEST_IMPLEMENTATION
 
 /*============================================================================*/
 /* SECTION 1.5: RESULT DATA MODEL                                             */
 /* (Included for both DECLARATION and IMPLEMENTATION)                         */
 /*============================================================================*/
-#if defined(UNIT_TEST_DECLARATION)
+#if defined(UNIT_TEST_IMPLEMENTATION)
 
 // Enum for the status of a test result
 typedef enum {
@@ -204,12 +218,12 @@ typedef struct {
     _UT_SuiteResult* suites_tail;
 } _UT_TestRun;
 
-#endif // UNIT_TEST_DECLARATION
+#endif // UNIT_TEST_IMPLEMENTATION
 
 /*============================================================================*/
 /* SECTION 2: GLOBAL STATE AND COLOR MANAGEMENT                               */
 /*============================================================================*/
-#if defined(UNIT_TEST_DECLARATION)
+#if defined(UNIT_TEST_IMPLEMENTATION)
 
 static _UT_TestInfo* _UT_registry_head = NULL;
 static _UT_TestInfo* g_UT_registry_tail = NULL;
@@ -225,11 +239,6 @@ static _UT_TestResult* g_UT_current_test_result = NULL;
 #define KYEL (_UT_use_color ? "\x1B[33m" : "")
 #define KBLU (_UT_use_color ? "\x1B[34m" : "")
 
-static void _UT_init_colors(void);
-
-#endif // UNIT_TEST_DECLARATION
-
-#ifdef UNIT_TEST_IMPLEMENTATION
 static void _UT_init_colors(void) {
     const char* no_color = getenv("NO_COLOR");
     _UT_use_color = UT_IS_TTY && !no_color;
@@ -250,10 +259,18 @@ static void _UT_init_colors(void) {
 
 /*============================================================================*/
 /* SECTION 3: ADVANCED MEMORY TRACKING                                        */
-/* (Included for MEMORY_TRACKING, DECLARATION, and IMPLEMENTATION)            */
 /*============================================================================*/
 #ifdef UT_MEMORY_TRACKING_ENABLED
 
+
+// Shared global state for memory tracking.
+// Declared as 'extern' so all modules see the same variables.
+// Defined once in the file that sets UNIT_TEST_IMPLEMENTATION.
+extern int UT_alloc_count, UT_free_count;
+extern size_t g_UT_total_bytes_allocated; 
+extern size_t g_UT_total_bytes_freed;     
+
+#ifdef UNIT_TEST_IMPLEMENTATION
 // Node for the linked list that tracks memory allocations.
 typedef struct _UT_MemInfo {
     void* address;
@@ -264,18 +281,6 @@ typedef struct _UT_MemInfo {
     struct _UT_MemInfo* next;
 } _UT_MemInfo;
 
-// Shared global state for memory tracking.
-// Declared as 'extern' so all modules see the same variables.
-// Defined once in the file that sets UNIT_TEST_IMPLEMENTATION.
-extern _UT_MemInfo* _UT_mem_head;
-extern int UT_alloc_count, UT_free_count;
-extern int _UT_mem_tracking_enabled;
-extern int _UT_mem_tracking_is_active;
-extern int _UT_leak_UT_check_enabled;
-extern size_t g_UT_total_bytes_allocated; 
-extern size_t g_UT_total_bytes_freed;     
-
-#ifdef UNIT_TEST_IMPLEMENTATION
 // Actual definitions of the global variables. This code will only be
 // compiled into the single .c file that defines UNIT_TEST_IMPLEMENTATION.
 _UT_MemInfo* _UT_mem_head = NULL;
@@ -295,26 +300,26 @@ size_t g_UT_total_bytes_freed = 0;
 
 // Forward declaration for failure recording to avoid dependency issues.
 #if defined(UNIT_TEST_DECLARATION)
-static void _UT_record_failure(const char* file, int line, const char* cond_str, const char* exp_str, const char* act_str);
+void _UT_record_failure(const char* file, int line, const char* cond_str, const char* exp_str, const char* act_str);
 #endif
 
 /**
  * @brief Dynamically enables memory tracking at runtime.
  *        Does nothing if UT_MEMORY_TRACKING_ENABLED was not defined at compile time.
  */
-static void UT_enable_memory_tracking(void) { _UT_mem_tracking_is_active = 1; }
+void UT_enable_memory_tracking(void);
 
 /**
  * @brief Dynamically disables memory tracking at runtime.
  *        Allocations and frees will not be tracked until it is re-enabled.
  */
-static void UT_disable_memory_tracking(void) { _UT_mem_tracking_is_active = 0; }
+void UT_disable_memory_tracking(void);
 
 /**
  * @brief Disables the final memory leak check for the current test.
  *        Useful for tests that intentionally don't free setup memory.
  */
-static void UT_disable_leak_check(void) { _UT_leak_UT_check_enabled = 0; }
+void UT_disable_leak_check(void);
 
 /**
  * @brief Marks all currently tracked memory blocks as 'baseline'.
@@ -324,8 +329,7 @@ static void UT_disable_leak_check(void) { _UT_leak_UT_check_enabled = 0; }
  * memory leak check. However, they remain tracked, allowing functions under test
  * to legally free them.
  */
-static void UT_mark_memory_as_baseline(void);
-
+void UT_mark_memory_as_baseline(void);
 
 // Wrapper declarations
 void* _UT_malloc(size_t size, const char* file, int line);
@@ -333,11 +337,13 @@ void* _UT_calloc(size_t num, size_t size, const char* file, int line);
 void* _UT_realloc(void* old_ptr, size_t new_size, const char* file, int line);
 void _UT_free(void* ptr, const char* file, int line);
 
+#ifdef UNIT_TEST_MEMORY_TRACKING
 // Hijack standard memory functions to use our tracking wrappers.
 #define malloc(size) _UT_malloc(size, __FILE__, __LINE__)
 #define calloc(num, size) _UT_calloc(num, size, __FILE__, __LINE__)
 #define realloc(ptr, size) _UT_realloc(ptr, size, __FILE__, __LINE__)
 #define free(ptr) _UT_free(ptr, __FILE__, __LINE__)
+#endif // UNIT_TEST_MEMORY_TRACKING
 
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -349,7 +355,7 @@ void _UT_free(void* ptr, const char* file, int line);
 #ifdef UT_MEMORY_TRACKING_ENABLED
 
 // ============================================================================
-// FIX: Undefine macros for the implementation of the memory wrappers
+// Undefine macros for the implementation of the memory wrappers
 // to prevent infinite recursion. All calls to malloc, calloc, etc. inside this
 // block will refer to the original standard library functions.
 // ============================================================================
@@ -371,7 +377,11 @@ static char* _UT_strdup(const char* s) {
     return new_s;
 }
 
-static void UT_mark_memory_as_baseline(void) {
+// DEFINITIONS of memory utility functions. Not static.
+void UT_enable_memory_tracking(void) { _UT_mem_tracking_is_active = 1; }
+void UT_disable_memory_tracking(void) { _UT_mem_tracking_is_active = 0; }
+void UT_disable_leak_check(void) { _UT_leak_UT_check_enabled = 0; }
+void UT_mark_memory_as_baseline(void) {
     if (!_UT_mem_tracking_enabled) return;
     _UT_MemInfo* current = _UT_mem_head;
     while (current != NULL) {
@@ -557,6 +567,17 @@ static void _UT_register_test(_UT_TestInfo* test_info) { if (_UT_registry_head =
  */
 #define TEST_CASE(SuiteName, TestDescription) static void _UT_CONCAT(test_func_, __LINE__)(void); _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__)) { static _UT_TestInfo ti = { #SuiteName, #TestDescription, _UT_CONCAT(test_func_, __LINE__), NULL, NULL }; _UT_register_test(&ti); } static void _UT_CONCAT(test_func_, __LINE__)(void)
 
+// Helper macros for conditionally suppressing GCC warnings
+#ifdef __GNUC__
+#define _UT_GCC_DIAG_PUSH _Pragma("GCC diagnostic push")
+#define _UT_GCC_DIAG_POP _Pragma("GCC diagnostic pop")
+#define _UT_GCC_DIAG_IGNORE_OVERRIDE_INIT _Pragma("GCC diagnostic ignored \"-Woverride-init\"")
+#else
+#define _UT_GCC_DIAG_PUSH
+#define _UT_GCC_DIAG_POP
+#define _UT_GCC_DIAG_IGNORE_OVERRIDE_INIT
+#endif
+
 /**
  * @brief Defines a "death test" case, which is expected to terminate abnormally.
  *
@@ -571,7 +592,17 @@ static void _UT_register_test(_UT_TestInfo* test_info) { if (_UT_registry_head =
  *        - .expected_signal: The signal number expected to terminate the process (POSIX-only).
  *        - .expected_exit_code: The exact exit code expected from the process.
  */
-#define TEST_DEATH_CASE(SuiteName, TestDescription, ...) static void _UT_CONCAT(test_func_, __LINE__)(void); _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__)) { static _UT_DeathExpect de = { .expected_msg = NULL, .expected_signal = 0, .expected_exit_code = -1, .min_similarity = 0.95f, __VA_ARGS__ }; static _UT_TestInfo ti = { #SuiteName, #TestDescription, _UT_CONCAT(test_func_, __LINE__), &de, NULL }; _UT_register_test(&ti); } static void _UT_CONCAT(test_func_, __LINE__)(void)
+#define TEST_DEATH_CASE(SuiteName, TestDescription, ...) \
+    static void _UT_CONCAT(test_func_, __LINE__)(void); \
+    _UT_GCC_DIAG_PUSH \
+    _UT_GCC_DIAG_IGNORE_OVERRIDE_INIT \
+    _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__)) { \
+        static _UT_DeathExpect de = { .expected_msg = NULL, .expected_signal = 0, .expected_exit_code = -1, .min_similarity = 0.95f, __VA_ARGS__ }; \
+        static _UT_TestInfo ti = { #SuiteName, #TestDescription, _UT_CONCAT(test_func_, __LINE__), &de, NULL }; \
+        _UT_register_test(&ti); \
+    } \
+    _UT_GCC_DIAG_POP \
+    static void _UT_CONCAT(test_func_, __LINE__)(void)
 
 #endif // UNIT_TEST_DECLARATION
 
@@ -583,7 +614,7 @@ static void _UT_register_test(_UT_TestInfo* test_info) { if (_UT_registry_head =
 
 // Internal helper function to record a failure. Not a macro.
 // Implementation is provided only when UNIT_TEST_IMPLEMENTATION is defined.
-static void _UT_record_failure(const char* file, int line, const char* cond_str, const char* exp_str, const char* act_str);
+void _UT_record_failure(const char* file, int line, const char* cond_str, const char* exp_str, const char* act_str);
 
 /**
  * @brief Asserts that a condition is true.
@@ -736,9 +767,10 @@ static void _UT_record_failure(const char* file, int line, const char* cond_str,
     } \
 } while(0)
 
-static void _UT_print_int(char* buf, size_t size, int val) { snprintf(buf, size, "%d", val); }
-static void _UT_print_char(char* buf, size_t size, char val) { snprintf(buf, size, "'%c'", val); }
-static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf(buf, size, "\"%s\"", val); }
+// Declarations for print helpers. Definitions are in the implementation block.
+void _UT_print_int(char* buf, size_t size, int val);
+void _UT_print_char(char* buf, size_t size, char val);
+void _UT_print_string(char* buf, size_t size, const char* val);
 
 #define PROPERTY_INT(value, predicate_fn, help_text) PROPERTY(value, predicate_fn, _UT_print_int, help_text)
 #define PROPERTY_CHAR(value, predicate_fn, help_text) PROPERTY(value, predicate_fn, _UT_print_char, help_text)
@@ -764,14 +796,14 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
      * @param SuiteName The name of the test suite.
      * @param TestDescription A descriptive name for the test case.
      */
-    #define TEST_ASSERTION(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = 3)
+    #define TEST_ASSERTION_FAILURE(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = 3)
 #else
     /**
      * @brief Defines a test case that is expected to fail with a standard C assertion.
      * @param SuiteName The name of the test suite.
      * @param TestDescription A descriptive name for the test case.
      */
-    #define TEST_ASSERTION(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT)
+    #define TEST_ASSERTION_FAILURE(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT)
 #endif
 
 #ifndef UT_DEFAULT_FLOAT_TOLERANCE
@@ -818,6 +850,7 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
 #define EQUAL_FLOAT(expected, actual) NEAR_FLOAT(expected, actual, UT_DEFAULT_FLOAT_TOLERANCE)
 #define EQUAL_DOUBLE(expected, actual) NEAR_DOUBLE(expected, actual, UT_DEFAULT_DOUBLE_TOLERANCE)
 
+#ifdef UT_MEMORY_TRACKING_ENABLED
 /**
  * @brief (Memory Tracking) Asserts the exact number of allocations and frees that occur within a code block.
  * @param code_block The block of code to execute and monitor.
@@ -941,11 +974,17 @@ static void _UT_print_string(char* buf, size_t size, const char* val) { snprintf
         current = current->next; \
     } \
 } while (0)
+#endif // UT_MEMORY_TRACKING_ENABLED
 
 #endif // UNIT_TEST_DECLARATION
 
 
 #ifdef UNIT_TEST_IMPLEMENTATION
+// Definitions for print helpers. Not static.
+void _UT_print_int(char* buf, size_t size, int val) { snprintf(buf, size, "%d", val); }
+void _UT_print_char(char* buf, size_t size, char val) { snprintf(buf, size, "'%c'", val); }
+void _UT_print_string(char* buf, size_t size, const char* val) { snprintf(buf, size, "\"%s\"", val); }
+
 static int _ut_min3(int a, int b, int c) {
     if (a < b && a < c) return a;
     if (b < a && b < c) return b;
@@ -954,7 +993,7 @@ static int _ut_min3(int a, int b, int c) {
 
 /**
  * @brief (Auxiliar function) Calculates the Levenshtein distance between two strings,
- * ignoring case differences.
+ * ignoring case differences. This helper can remain static as it's only used below.
  * This is a space-optimized implementation.
  */
 static int _ut_levenshtein_distance(const char *s1, const char *s2) {
@@ -980,8 +1019,9 @@ static int _ut_levenshtein_distance(const char *s1, const char *s2) {
 
 /**
  * @brief  (Auxiliar function) Calculates a similarity ratio (0.0 to 1.0) based on the Levenshtein distance.
+ * This function's definition is not static, so it can be linked by test files.
  */
-static float _ut_calculate_similarity_ratio(const char *s1, const char *s2) {
+float _ut_calculate_similarity_ratio(const char *s1, const char *s2) {
     if (!s1 || !s2) return 0.0f;
     int s1len = (int)strlen(s1);
     int s2len = (int)strlen(s2);
@@ -992,8 +1032,8 @@ static float _ut_calculate_similarity_ratio(const char *s1, const char *s2) {
     return 1.0f - ((float)distance / max_len);
 }
 
-// Internal helper function to record a failure.
-static void _UT_record_failure(const char* file, int line, const char* cond_str, const char* exp_str, const char* act_str) {
+// Internal helper function to record a failure. Not static.
+void _UT_record_failure(const char* file, int line, const char* cond_str, const char* exp_str, const char* act_str) {
     if (g_UT_current_test_result) {
         #ifdef UT_MEMORY_TRACKING_ENABLED
         UT_disable_memory_tracking(); // Disable tracking for internal allocations
@@ -1024,7 +1064,9 @@ static void _UT_record_failure(const char* file, int line, const char* cond_str,
 #if defined(UNIT_TEST_DECLARATION)
 #define _STDOUT_CAPTURE_BUFFER_SIZE 8192
 static char _UT_stdout_capture_buffer[_STDOUT_CAPTURE_BUFFER_SIZE];
-static float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
+
+// Declaration for the similarity function, defined in the implementation block.
+float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
 
 #define ASSERT_STDOUT_EQUAL(code_block, expected_str) do { \
     _UT_start_capture_stdout(); \
@@ -1072,11 +1114,6 @@ static float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
     } \
 } while (0)
 
-// Forward declarations for capture functions
-static void _UT_start_capture_stdout(void);
-static void _UT_stop_capture_stdout(char* buffer, size_t size);
-static void _UT_normalize_string_for_comparison(char* str);
-
 #endif // UNIT_TEST_DECLARATION
 
 
@@ -1084,14 +1121,14 @@ static void _UT_normalize_string_for_comparison(char* str);
 
 #ifdef _WIN32
     static HANDLE _UT_stdout_pipe_read = NULL, _UT_stdout_pipe_write = NULL, _UT_stdout_original_handle = NULL;
-    static void _UT_start_capture_stdout(void) {
+    void _UT_start_capture_stdout(void) {
         fflush(stdout);
         _UT_stdout_original_handle = GetStdHandle(STD_OUTPUT_HANDLE);
         SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
         if (!CreatePipe(&_UT_stdout_pipe_read, &_UT_stdout_pipe_write, &sa, 0)) return;
         SetStdHandle(STD_OUTPUT_HANDLE, _UT_stdout_pipe_write);
     }
-    static void _UT_stop_capture_stdout(char* buffer, size_t size) {
+    void _UT_stop_capture_stdout(char* buffer, size_t size) {
         fflush(stdout);
         CloseHandle(_UT_stdout_pipe_write);
         _UT_stdout_pipe_write = NULL;
@@ -1108,14 +1145,14 @@ static void _UT_normalize_string_for_comparison(char* str);
     }
 #else
     static int _UT_stdout_pipe[2] = {-1, -1}, _UT_stdout_original_fd = -1;
-    static void _UT_start_capture_stdout(void) {
+    void _UT_start_capture_stdout(void) {
         fflush(stdout);
         _UT_stdout_original_fd = dup(STDOUT_FILENO);
         if (pipe(_UT_stdout_pipe) == -1) return;
         dup2(_UT_stdout_pipe[1], STDOUT_FILENO);
         close(_UT_stdout_pipe[1]);
     }
-    static void _UT_stop_capture_stdout(char* buffer, size_t size) {
+    void _UT_stop_capture_stdout(char* buffer, size_t size) {
         fflush(stdout);
         dup2(_UT_stdout_original_fd, STDOUT_FILENO);
         close(_UT_stdout_original_fd);
@@ -1131,7 +1168,7 @@ static void _UT_normalize_string_for_comparison(char* str);
 #endif
 
 // Internal helper to normalize a string: trims whitespace and collapses internal whitespace.
-static void _UT_normalize_string_for_comparison(char* str) {
+void _UT_normalize_string_for_comparison(char* str) {
     if (!str) return;
     char *read_ptr = str, *write_ptr = str;
     int in_whitespace = 1;

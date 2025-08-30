@@ -3,6 +3,7 @@
 /* Pepe Gallardo, 2025                                                        */
 /*============================================================================*/
 
+#define UNIT_TEST_MEMORY_TRACKING
 #include "test/unit/UnitTest.h"
 #include "Helpers.h"
 
