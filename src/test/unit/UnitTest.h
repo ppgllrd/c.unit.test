@@ -1291,7 +1291,7 @@ float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
         if (!e || strcmp(e, _UT_stdout_capture_buffer) != 0)                                                \
         {                                                                                                   \
             char cond_str[256];                                                                             \
-            snprintf(cond_str, sizeof(cond_str), "output of '%s' equals '%s'", #code_block, #expected_str); \
+            snprintf(cond_str, sizeof(cond_str), "[STDOUT]output of '%s' equals '%s'", #code_block, #expected_str); \
             _UT_record_failure(__FILE__, __LINE__, cond_str, e, _UT_stdout_capture_buffer);                 \
         }                                                                                                   \
     } while (0)
@@ -1315,7 +1315,7 @@ float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
         if (strcmp(expected_normalized, actual_normalized) != 0)                                                                \
         {                                                                                                                       \
             char condition_str[256];                                                                                            \
-            snprintf(condition_str, sizeof(condition_str), "output of '%s' is equivalent to '%s'", #code_block, #expected_str); \
+            snprintf(condition_str, sizeof(condition_str), "[STDOUT]output of '%s' is equivalent to '%s'", #code_block, #expected_str); \
             _UT_record_failure(__FILE__, __LINE__, condition_str, expected_str, _UT_stdout_capture_buffer);                     \
         }                                                                                                                       \
     } while (0)
@@ -1335,7 +1335,7 @@ float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
             char expected_buf[256], actual_buf[sizeof(_UT_stdout_capture_buffer) + 128], condition_str[256];                                            \
             snprintf(expected_buf, sizeof(expected_buf), "A string with at least %.2f%% similarity to \"%s\"", (min_similarity) * 100.0f, e);           \
             snprintf(actual_buf, sizeof(actual_buf), "A string with %.2f%% similarity: \"%s\"", actual_similarity * 100.0f, _UT_stdout_capture_buffer); \
-            snprintf(condition_str, sizeof(condition_str), "similarity(output_of(%s), \"%s\") >= %.2f", #code_block, #expected_str, (min_similarity));  \
+            snprintf(condition_str, sizeof(condition_str), "[STDOUT]similarity(output_of(%s), \"%s\") >= %.2f", #code_block, #expected_str, (min_similarity));  \
             _UT_record_failure(__FILE__, __LINE__, condition_str, expected_buf, actual_buf);                                                            \
         }                                                                                                                                               \
     } while (0)
@@ -1495,15 +1495,15 @@ void _UT_normalize_string_for_comparison(char *str)
 // These are simple text-based functions for IPC between parent and child.
 static void _UT_serialize_result(FILE *stream, _UT_TestResult *result)
 {
-    fprintf(stream, "status=%d\n", result->status);
+    fprintf(stream, "status=%d\x1F", result->status);
     _UT_AssertionFailure *f = result->failures;
     while (f)
     {
         // A simple serialization format: key=value pairs, failures are pipe-delimited
-        fprintf(stream, "failure=%s|%d|%s|%s|%s\n", f->file, f->line, f->condition_str, f->expected_str ? f->expected_str : "", f->actual_str ? f->actual_str : "");
+        fprintf(stream, "failure=%s|%d|%s|%s|%s\x1F", f->file, f->line, f->condition_str, f->expected_str ? f->expected_str : "", f->actual_str ? f->actual_str : "");
         f = f->next;
     }
-    fprintf(stream, "end_of_data\n");
+    fprintf(stream, "end_of_data\x1F");
 }
 
 static _UT_TestResult *_UT_deserialize_result(const char *buffer, _UT_TestInfo *test_info)
@@ -1517,7 +1517,7 @@ static _UT_TestResult *_UT_deserialize_result(const char *buffer, _UT_TestInfo *
     const char *p = buffer;
     while (p && *p)
     {
-        const char *next_p = strchr(p, '\n');
+        const char *next_p = strchr(p, '\x1F');
         size_t len = next_p ? (size_t)(next_p - p) : strlen(p);
         if (len >= sizeof(line))
             len = sizeof(line) - 1;
@@ -1853,6 +1853,54 @@ typedef struct
 
 // --- CONSOLE REPORTER IMPLEMENTATION ---
 
+/**
+ * @brief Prints a string to a stream, enclosing it in quotes and escaping
+ *        control characters like \n, \r, \t, etc.
+ */
+static void _UT_print_escaped_string(FILE *stream, const char *str)
+{
+    if (str == NULL)
+    {
+        fprintf(stream, "NULL");
+        return;
+    }
+
+    fputc('"', stream);
+    for (const char *p = str; *p != '\0'; p++)
+    {
+        switch (*p)
+        {
+        case '\n':
+            fprintf(stream, "\\n");
+            break;
+        case '\r':
+            fprintf(stream, "\\r");
+            break;
+        case '\t':
+            fprintf(stream, "\\t");
+            break;
+        case '\\':
+            fprintf(stream, "\\\\");
+            break;
+        case '"':
+            fprintf(stream, "\\\"");
+            break;
+        default:
+            // For other non-printable characters, print their hex value
+            if (isprint((unsigned char)*p))
+            {
+                fputc(*p, stream);
+            }
+            else
+            {
+                fprintf(stream, "\\x%02x", (unsigned char)*p);
+            }
+            break;
+        }
+    }
+    fputc('"', stream);
+}
+
 static void _UT_console_on_suite_start(const _UT_SuiteResult *suite)
 {
     printf("%sTests for %s%s\n", KBLU, suite->name, KNRM);
@@ -1877,11 +1925,37 @@ static void _UT_console_on_test_finish(const _UT_TestResult *test)
         _UT_AssertionFailure *f = test->failures;
         while (f)
         {
-            fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", f->condition_str, f->file, f->line);
-            if (f->expected_str)
-                fprintf(stderr, "   Expected: %s%s%s\n", KGRN, f->expected_str, KNRM);
-            if (f->actual_str)
-                fprintf(stderr, "   Got: %s%s%s\n", KRED, f->actual_str, KNRM);
+            const char *tag = "[STDOUT]";
+            const int tag_len = 8; // Length of "[STDOUT]"
+
+            // Check if this is a tagged stdout assertion
+            if (strncmp(f->condition_str, tag, tag_len) == 0)
+            {
+                // -- PATH 1: STDOUT assertion with escaped printing --
+                // Print condition string, skipping the tag for cleaner output
+                fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", f->condition_str + tag_len, f->file, f->line);
+                
+                if (f->expected_str) {
+                    fprintf(stderr, "   Expected: %s", KGRN);
+                    _UT_print_escaped_string(stderr, f->expected_str);
+                    fprintf(stderr, "%s\n", KNRM);
+                }
+                if (f->actual_str) {
+                    fprintf(stderr, "   Got: %s", KRED);
+                    _UT_print_escaped_string(stderr, f->actual_str);
+                    fprintf(stderr, "%s\n", KNRM);
+                }
+            }
+            else
+            {
+                // -- PATH 2: All other assertions with standard printing --
+                fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", f->condition_str, f->file, f->line);
+
+                if (f->expected_str)
+                    fprintf(stderr, "   Expected: %s%s%s\n", KGRN, f->expected_str, KNRM);
+                if (f->actual_str)
+                    fprintf(stderr, "   Got: %s%s%s\n", KRED, f->actual_str, KNRM);
+            }
             f = f->next;
         }
         break;
