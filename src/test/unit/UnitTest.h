@@ -1874,7 +1874,9 @@ static void _UT_print_escaped_string(FILE *stream, const char *str)
             fprintf(stream, "\\n");
             break;
         case '\r':
+        #ifndef _WIN32
             fprintf(stream, "\\r");
+        #endif
             break;
         case '\t':
             fprintf(stream, "\\t");
