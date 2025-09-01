@@ -23,3 +23,4 @@ file(GLOB_RECURSE HDR_FILES src/*.h)
 
 # add all those sources to executable
 add_executable(${PROJECT_NAME} ${SRC_FILES} ${HDR_FILES})
+

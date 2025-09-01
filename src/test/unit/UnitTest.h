@@ -84,7 +84,7 @@
 #include <time.h> // For timing execution
 
 /*============================================================================*/
-/* SECTION 0: MODE SELECTION                                                  */
+/* SECTION 0: MODE SELECTION & FRAMEWORK CONSTANTS                            */
 /*============================================================================*/
 // The implementation requires the declarations.
 #ifdef UNIT_TEST_IMPLEMENTATION
@@ -112,12 +112,20 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #endif
 
-#ifdef _WIN32
+// Unified assert macro definition
 #undef assert
-#define _UT_ASSERT_CODE 64353
+#ifdef NDEBUG
+#define assert(expr) ((void)0)
+#else
+#define _UT_assert_print(expr) fprintf(stderr, "Assertion failed: %s on file %s line %d\n", #expr, __FILE__, __LINE__)
+#ifdef _WIN32
 #define assert(expr) \
-    ((expr) ? (void)0 : (fprintf(stderr, "Assertion failed: %s, file %s, line %d\n", #expr, __FILE__, __LINE__), exit(_UT_ASSERT_CODE), (void)0))
+    ((expr) ? (void)0 : (_UT_assert_print(expr), exit(_UT_ASSERT_EXIT_CODE)))
+#else // POSIX
+#define assert(expr) \
+    ((expr) ? (void)0 : (_UT_assert_print(expr), abort()))
 #endif // _WIN32
+#endif // NDEBUG
 
 /*============================================================================*/
 /* SECTION 1: CORE DEFINITIONS & PLATFORM ABSTRACTION                         */
@@ -128,7 +136,6 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
-#include <fcntl.h>
 #define UT_IS_TTY _isatty(_fileno(stdout))
 #else // POSIX
 #include <unistd.h>
@@ -948,17 +955,35 @@ void _UT_print_string(char *buf, size_t size, const char *val);
 #ifdef _WIN32
 /**
  * @brief Defines a test case that is expected to fail with a standard C assertion.
+ *        This test only checks that the process terminates with the correct exit code.
  * @param SuiteName The name of the test suite.
  * @param TestDescription A descriptive name for the test case.
  */
-#define TEST_ASSERTION_FAILURE(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = _UT_ASSERT_CODE)
+#define TEST_ASSERTION_FAILURE(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = _UT_ASSERT_EXIT_CODE, .expected_msg = NULL)
+/**
+ * @brief Defines a test case that is expected to fail with a standard C assertion and
+ *        verifies that the assertion message in stderr contains a specific substring.
+ * @param SuiteName The name of the test suite.
+ * @param TestDescription A descriptive name for the test case.
+ * @param expected_substring The substring to find within the stderr output.
+ */
+#define TEST_ASSERTION_FAILURE_WITH_MESSAGE(SuiteName, TestDescription, expected_substring) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = _UT_ASSERT_EXIT_CODE, .expected_msg = (expected_substring))
 #else
 /**
  * @brief Defines a test case that is expected to fail with a standard C assertion.
+ *        This test only checks that the process is terminated by a SIGABRT signal.
  * @param SuiteName The name of the test suite.
  * @param TestDescription A descriptive name for the test case.
  */
-#define TEST_ASSERTION_FAILURE(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT)
+#define TEST_ASSERTION_FAILURE(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT, .expected_msg = NULL)
+/**
+ * @brief Defines a test case that is expected to fail with a standard C assertion and
+ *        verifies that the assertion message in stderr contains a specific substring.
+ * @param SuiteName The name of the test suite.
+ * @param TestDescription A descriptive name for the test case.
+ * @param expected_substring The substring to find within the stderr output.
+ */
+#define TEST_ASSERTION_FAILURE_WITH_MESSAGE(SuiteName, TestDescription, expected_substring) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT, .expected_msg = (expected_substring))
 #endif
 
 #ifndef UT_DEFAULT_FLOAT_TOLERANCE
@@ -1291,7 +1316,7 @@ float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
         if (!e || strcmp(e, _UT_stdout_capture_buffer) != 0)                                                \
         {                                                                                                   \
             char cond_str[256];                                                                             \
-            snprintf(cond_str, sizeof(cond_str), "[STDOUT]output of '%s' equals '%s'", #code_block, #expected_str); \
+            snprintf(cond_str, sizeof(cond_str), _UT_TAG_STDOUT "output of '%s' equals '%s'", #code_block, #expected_str); \
             _UT_record_failure(__FILE__, __LINE__, cond_str, e, _UT_stdout_capture_buffer);                 \
         }                                                                                                   \
     } while (0)
@@ -1315,7 +1340,7 @@ float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
         if (strcmp(expected_normalized, actual_normalized) != 0)                                                                \
         {                                                                                                                       \
             char condition_str[256];                                                                                            \
-            snprintf(condition_str, sizeof(condition_str), "[STDOUT]output of '%s' is equivalent to '%s'", #code_block, #expected_str); \
+            snprintf(condition_str, sizeof(condition_str), _UT_TAG_STDOUT "output of '%s' is equivalent to '%s'", #code_block, #expected_str); \
             _UT_record_failure(__FILE__, __LINE__, condition_str, expected_str, _UT_stdout_capture_buffer);                     \
         }                                                                                                                       \
     } while (0)
@@ -1335,7 +1360,7 @@ float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
             char expected_buf[256], actual_buf[sizeof(_UT_stdout_capture_buffer) + 128], condition_str[256];                                            \
             snprintf(expected_buf, sizeof(expected_buf), "A string with at least %.2f%% similarity to \"%s\"", (min_similarity) * 100.0f, e);           \
             snprintf(actual_buf, sizeof(actual_buf), "A string with %.2f%% similarity: \"%s\"", actual_similarity * 100.0f, _UT_stdout_capture_buffer); \
-            snprintf(condition_str, sizeof(condition_str), "[STDOUT]similarity(output_of(%s), \"%s\") >= %.2f", #code_block, #expected_str, (min_similarity));  \
+            snprintf(condition_str, sizeof(condition_str), _UT_TAG_STDOUT "similarity(output_of(%s), \"%s\") >= %.2f", #code_block, #expected_str, (min_similarity));  \
             _UT_record_failure(__FILE__, __LINE__, condition_str, expected_buf, actual_buf);                                                            \
         }                                                                                                                                               \
     } while (0)
@@ -1487,6 +1512,19 @@ void _UT_normalize_string_for_comparison(char *str)
 /*============================================================================*/
 #ifdef UNIT_TEST_IMPLEMENTATION
 
+// Define internal constants for serialization, CLI args, etc.
+#define _UT_SERIALIZATION_MARKER '\x1F'
+#define _UT_KEY_STATUS "status="
+#define _UT_KEY_STATUS_LEN (sizeof(_UT_KEY_STATUS) - 1)
+#define _UT_KEY_FAILURE "failure="
+#define _UT_KEY_FAILURE_LEN (sizeof(_UT_KEY_FAILURE) - 1)
+#define _UT_ARG_RUN_TEST "--run_test"
+#define _UT_ARG_SUITE_FILTER "--suite="
+#define _UT_ARG_SUITE_FILTER_LEN (sizeof(_UT_ARG_SUITE_FILTER) - 1)
+#define _UT_TAG_STDOUT "[STDOUT]"
+#define _UT_TAG_STDOUT_LEN (sizeof(_UT_TAG_STDOUT) - 1)
+#define _UT_ASSERT_EXIT_CODE 64353
+
 /*============================================================================*/
 /* SECTION 7: THE UT_RUN_ALL_TESTS IMPLEMENTATION (FULL VERSION)              */
 /*============================================================================*/
@@ -1495,15 +1533,15 @@ void _UT_normalize_string_for_comparison(char *str)
 // These are simple text-based functions for IPC between parent and child.
 static void _UT_serialize_result(FILE *stream, _UT_TestResult *result)
 {
-    fprintf(stream, "status=%d\x1F", result->status);
+    fprintf(stream, _UT_KEY_STATUS "%d%c", result->status, _UT_SERIALIZATION_MARKER);
     _UT_AssertionFailure *f = result->failures;
     while (f)
     {
         // A simple serialization format: key=value pairs, failures are pipe-delimited
-        fprintf(stream, "failure=%s|%d|%s|%s|%s\x1F", f->file, f->line, f->condition_str, f->expected_str ? f->expected_str : "", f->actual_str ? f->actual_str : "");
+        fprintf(stream, _UT_KEY_FAILURE "%s|%d|%s|%s|%s%c", f->file, f->line, f->condition_str, f->expected_str ? f->expected_str : "", f->actual_str ? f->actual_str : "", _UT_SERIALIZATION_MARKER);
         f = f->next;
     }
-    fprintf(stream, "end_of_data\x1F");
+    fprintf(stream, "end_of_data%c", _UT_SERIALIZATION_MARKER);
 }
 
 static _UT_TestResult *_UT_deserialize_result(const char *buffer, _UT_TestInfo *test_info)
@@ -1517,7 +1555,7 @@ static _UT_TestResult *_UT_deserialize_result(const char *buffer, _UT_TestInfo *
     const char *p = buffer;
     while (p && *p)
     {
-        const char *next_p = strchr(p, '\x1F');
+        const char *next_p = strchr(p, _UT_SERIALIZATION_MARKER);
         size_t len = next_p ? (size_t)(next_p - p) : strlen(p);
         if (len >= sizeof(line))
             len = sizeof(line) - 1;
@@ -1525,15 +1563,15 @@ static _UT_TestResult *_UT_deserialize_result(const char *buffer, _UT_TestInfo *
         line[len] = '\0';
         p = next_p ? next_p + 1 : NULL;
 
-        if (strncmp(line, "status=", 7) == 0)
+        if (strncmp(line, _UT_KEY_STATUS, _UT_KEY_STATUS_LEN) == 0)
         {
-            result->status = (_UT_TestStatus)atoi(line + 7);
+            result->status = (_UT_TestStatus)atoi(line + _UT_KEY_STATUS_LEN);
         }
-        else if (strncmp(line, "failure=", 8) == 0)
+        else if (strncmp(line, _UT_KEY_FAILURE, _UT_KEY_FAILURE_LEN) == 0)
         {
             _UT_AssertionFailure *f = (_UT_AssertionFailure *)calloc(1, sizeof(_UT_AssertionFailure));
             _UT_AssertionFailure *tail = NULL; // To keep original failure order
-            char *part = line + 8;
+            char *part = line + _UT_KEY_FAILURE_LEN;
             char *next_part = strchr(part, '|');
             if (next_part)
             {
@@ -1611,12 +1649,12 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char *argv[]);
 
 #ifdef _WIN32
 // ============================================================================
-// REFACTORED PROCESS RUNNER FOR WINDOWS
+// PROCESS RUNNER FOR WINDOWS
 // ============================================================================
 static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *executable_path)
 {
     char command_line[2048];
-    snprintf(command_line, sizeof(command_line), "\"%s\" --run_test \"%s\" \\\"%s\\\"", executable_path, test->suite_name, test->test_name);
+    snprintf(command_line, sizeof(command_line), "\"%s\" %s \"%s\" \\\"%s\\\"", executable_path, _UT_ARG_RUN_TEST, test->suite_name, test->test_name);
     HANDLE h_read = NULL, h_write = NULL;
     SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), NULL, TRUE};
     if (!CreatePipe(&h_read, &h_write, &sa, 0))
@@ -1752,7 +1790,7 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(out_pipe[1], STDERR_FILENO);
         close(out_pipe[1]);
-        char *child_argv[] = {(char *)executable_path, "--run_test", (char *)test->suite_name, (char *)test->test_name, NULL};
+        char *child_argv[] = {(char *)executable_path, _UT_ARG_RUN_TEST, (char *)test->suite_name, (char *)test->test_name, NULL};
         execv(executable_path, child_argv);
         perror("execv failed");
         exit(127);
@@ -1874,9 +1912,9 @@ static void _UT_print_escaped_string(FILE *stream, const char *str)
             fprintf(stream, "\\n");
             break;
         case '\r':
-        #ifndef _WIN32
+#ifndef _WIN32
             fprintf(stream, "\\r");
-        #endif
+#endif
             break;
         case '\t':
             fprintf(stream, "\\t");
@@ -1927,22 +1965,21 @@ static void _UT_console_on_test_finish(const _UT_TestResult *test)
         _UT_AssertionFailure *f = test->failures;
         while (f)
         {
-            const char *tag = "[STDOUT]";
-            const int tag_len = 8; // Length of "[STDOUT]"
-
             // Check if this is a tagged stdout assertion
-            if (strncmp(f->condition_str, tag, tag_len) == 0)
+            if (strncmp(f->condition_str, _UT_TAG_STDOUT, _UT_TAG_STDOUT_LEN) == 0)
             {
                 // -- PATH 1: STDOUT assertion with escaped printing --
                 // Print condition string, skipping the tag for cleaner output
-                fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", f->condition_str + tag_len, f->file, f->line);
-                
-                if (f->expected_str) {
+                fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", f->condition_str + _UT_TAG_STDOUT_LEN, f->file, f->line);
+
+                if (f->expected_str)
+                {
                     fprintf(stderr, "   Expected: %s", KGRN);
                     _UT_print_escaped_string(stderr, f->expected_str);
                     fprintf(stderr, "%s\n", KNRM);
                 }
-                if (f->actual_str) {
+                if (f->actual_str)
+                {
                     fprintf(stderr, "   Got: %s", KRED);
                     _UT_print_escaped_string(stderr, f->actual_str);
                     fprintf(stderr, "%s\n", KNRM);
@@ -2059,7 +2096,7 @@ static _UT_Reporter _UT_ConsoleReporter = {
 int _UT_RUN_ALL_TESTS_impl(int argc, char *argv[])
 {
     // ================== CHILD PROCESS EXECUTION ==================
-    if (argc == 4 && strcmp(argv[1], "--run_test") == 0)
+    if (argc == 4 && strcmp(argv[1], _UT_ARG_RUN_TEST) == 0)
     {
         _UT_TestInfo *current = _UT_registry_head;
         while (current)
@@ -2115,9 +2152,9 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char *argv[])
     const char *suite_filter = NULL;
     for (int i = 1; i < argc; ++i)
     {
-        if (strncmp(argv[i], "--suite=", 8) == 0)
+        if (strncmp(argv[i], _UT_ARG_SUITE_FILTER, _UT_ARG_SUITE_FILTER_LEN) == 0)
         {
-            suite_filter = argv[i] + 8;
+            suite_filter = argv[i] + _UT_ARG_SUITE_FILTER_LEN;
             break;
         }
     }

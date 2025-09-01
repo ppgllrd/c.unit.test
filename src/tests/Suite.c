@@ -263,7 +263,7 @@ TEST_CASE(CircularLinkedList_equals, "Returns false when first list is longer") 
 /*============================================================================*/
 /* MAIN FUNCTION                                                              */
 /*============================================================================*/
-int main(int argc, char* argv[]) {
+int runAllTests(int argc, char* argv[]) {
     return UT_RUN_ALL_TESTS();
 }
 
