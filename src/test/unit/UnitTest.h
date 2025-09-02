@@ -695,7 +695,7 @@ static void _UT_register_test(_UT_TestInfo *test_info)
     static void _UT_CONCAT(test_func_, __LINE__)(void);                                                        \
     _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__))                                                   \
     {                                                                                                          \
-        static _UT_TestInfo ti = {#SuiteName, #TestDescription, _UT_CONCAT(test_func_, __LINE__), NULL, NULL}; \
+        static _UT_TestInfo ti = {#SuiteName, TestDescription, _UT_CONCAT(test_func_, __LINE__), NULL, NULL}; \
         _UT_register_test(&ti);                                                                                \
     }                                                                                                          \
     static void _UT_CONCAT(test_func_, __LINE__)(void)
@@ -733,7 +733,7 @@ static void _UT_register_test(_UT_TestInfo *test_info)
     _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__))                                                                                                      \
     {                                                                                                                                                             \
         static _UT_DeathExpect de = {.expected_signal = 0, .expected_exit_code = -1, .min_similarity = 0.95f, .expected_assert_msg = NULL, .is_exact_assert_check = 0, __VA_ARGS__}; \
-        static _UT_TestInfo ti = {#SuiteName, #TestDescription, _UT_CONCAT(test_func_, __LINE__), &de, NULL};                                                      \
+        static _UT_TestInfo ti = {#SuiteName, TestDescription, _UT_CONCAT(test_func_, __LINE__), &de, NULL};                                                      \
         _UT_register_test(&ti);                                                                                                                                   \
     }                                                                                                                                                             \
     _UT_GCC_DIAG_POP                                                                                                                                              \

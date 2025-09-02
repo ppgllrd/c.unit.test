@@ -54,7 +54,7 @@ TEST_ASSERTION_FAILURE(CircularLinkedList_insert, "Assertion fails on NULL p_lis
     // attempt to insert into a NULL list should trigger an assertion failure
     CircularLinkedList_insert(NULL, 10);
 }
-TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_insert, "Assertion fails on NULL p_list parameter with 'List is NULL' message", "List is NULL") {
+TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_insert, "Assertion fails on NULL p_list parameter with \"List is NULL\" message", "List is NULL") {
     // attempt to insert into a NULL list should trigger an assertion failure with the correct message
     CircularLinkedList_insert(NULL, 10);
 }
@@ -108,7 +108,7 @@ TEST_ASSERTION_FAILURE(CircularLinkedList_remove, "Assertion fails with on out o
     UT_mark_memory_as_baseline();
     CircularLinkedList_remove(list, 3);
 }
-TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_remove, "Assertion fails with on out of bounds index with 'Index out of bounds' message", "Index out of bounds") {
+TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_remove, "Assertion fails with on out of bounds index with \"Index out of bounds\" message", "Index out of bounds") {
     // attempt to remove an element at an out-of-bounds index should trigger an assertion failure with the correct message
     struct CircularLinkedList* list = _create_test_list((int[]){5, 10, 15}, 3);
     UT_mark_memory_as_baseline();
@@ -118,7 +118,7 @@ TEST_ASSERTION_FAILURE(CircularLinkedList_remove, "Assertion fails on NULL p_lis
     // attempt to remove from a NULL list should trigger an assertion failure
     CircularLinkedList_remove(NULL, 0);
 }
-TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_remove, "Assertion fails on NULL p_list parameter with 'List is NULL' message", "List is NULL") {
+TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_remove, "Assertion fails on NULL p_list parameter with \"List is NULL\" message", "List is NULL") {
     // attempt to remove from a NULL list should trigger an assertion failure with the correct message
     CircularLinkedList_remove(NULL, 0);
 }
@@ -170,7 +170,7 @@ TEST_ASSERTION_FAILURE(CircularLinkedList_print, "Assertion fails on NULL p_list
     // attempt to print a NULL list should trigger an assertion failure
     CircularLinkedList_print(NULL);
 }
-TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_print, "Assertion fails on NULL p_list parameter with 'List is NULL' message", "List is null", .min_similarity = 0.85f) {
+TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_print, "Assertion fails on NULL p_list parameter with \"List is NULL\" message", "List is null", .min_similarity = 0.85f) {
     // attempt to print a NULL list should trigger an assertion failure
     CircularLinkedList_print(NULL);
 }
@@ -207,7 +207,7 @@ TEST_ASSERTION_FAILURE(CircularLinkedList_free, "Assertion fails on pointer to N
     struct CircularLinkedList* list = NULL;
     CircularLinkedList_free(&list);
 }
-TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_free, "Assertion fails on pointer to NULL pointer parameter with 'List is NULL' message", "List is NULL") {
+TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_free, "Assertion fails on pointer to NULL pointer parameter with \"List is NULL\" message", "List is NULL") {
     // attempt to free a list via a pointer to a NULL pointer should trigger an assertion failure with the correct message
     struct CircularLinkedList* list = NULL;
     CircularLinkedList_free(&list);
@@ -216,7 +216,7 @@ TEST_ASSERTION_FAILURE(CircularLinkedList_free, "Assertion fails on NULL p_list 
     // attempt to free a list via a NULL double pointer should trigger an assertion failure
     CircularLinkedList_free(NULL);
 }
-TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_free, "Assertion fails on NULL p_list parameter with 'Pointer is NULL' message", "Pointer is NULL") {
+TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_free, "Assertion fails on NULL p_list parameter with \"Pointer is NULL\" message", "Pointer is NULL") {
     // attempt to free a list via a NULL double pointer should trigger an assertion failure with the correct message
     CircularLinkedList_free(NULL);
 }
@@ -256,7 +256,7 @@ TEST_ASSERTION_FAILURE(CircularLinkedList_equals, "Assertion fails when first li
     struct CircularLinkedList* list2 = _create_test_list((int[]){10, 20}, 2);
     CircularLinkedList_equals(NULL, list2);
 }
-TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_equals, "Assertion fails when first list is NULL with 'List 1 is NULL' message", "List 1 is NULL") {
+TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_equals, "Assertion fails when first list is NULL with \"List 1 is NULL\" message", "List 1 is NULL") {
     // attempt to compare with a NULL list as the first argument should trigger an assertion failure with the correct message
     struct CircularLinkedList* list2 = _create_test_list((int[]){10, 20}, 2);
     CircularLinkedList_equals(NULL, list2);
@@ -266,7 +266,7 @@ TEST_ASSERTION_FAILURE(CircularLinkedList_equals, "Assertion fails when second l
     struct CircularLinkedList* list1 = _create_test_list((int[]){10, 20}, 2);
     CircularLinkedList_equals(list1, NULL);
 }
-TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_equals, "Assertion fails when second list is NULL with 'List 2 is NULL' message", "List 2 is NULL") {
+TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(CircularLinkedList_equals, "Assertion fails when second list is NULL with \"List 2 is NULL\" message", "List 2 is NULL") {
     // attempt to compare with a NULL list as the second argument should trigger an assertion failure with the correct message
     struct CircularLinkedList* list1 = _create_test_list((int[]){10, 20}, 2);
     CircularLinkedList_equals(list1, NULL);
