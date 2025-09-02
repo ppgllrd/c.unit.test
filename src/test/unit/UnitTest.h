@@ -117,6 +117,7 @@
 #ifdef NDEBUG
 #define assert(expr) ((void)0)
 #else
+#define _UT_ASSERT_EXIT_CODE 64353
 #define _UT_assert_print(expr) fprintf(stderr, "Assertion failed: %s on file %s line %d\n", #expr, __FILE__, __LINE__)
 #ifdef _WIN32
 #define assert(expr) \
@@ -136,6 +137,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
+#include <fcntl.h>
 #define UT_IS_TTY _isatty(_fileno(stdout))
 #else // POSIX
 #include <unistd.h>
@@ -163,10 +165,11 @@ typedef void (*_UT_TestFunction)(void);
 typedef struct _UT_TestInfo _UT_TestInfo;
 typedef struct
 {
-    const char *expected_msg;
     int expected_signal;
     int expected_exit_code;
     float min_similarity;
+    const char *expected_assert_msg;
+    int is_exact_assert_check;
 } _UT_DeathExpect;
 
 struct _UT_TestInfo
@@ -370,7 +373,7 @@ void _UT_free(void *ptr, const char *file, int line);
 #ifdef UNIT_TEST_MEMORY_TRACKING
 // Hijack standard memory functions to use our tracking wrappers.
 #define malloc(size) _UT_malloc(size, __FILE__, __LINE__)
-#define calloc(num, size) _UT_calloc(num, size, __FILE__, __LINE__)
+#define calloc(num, size) _UT_oc(num, size, __FILE__, __LINE__)
 #define realloc(ptr, size) _UT_realloc(ptr, size, __FILE__, __LINE__)
 #define free(ptr) _UT_free(ptr, __FILE__, __LINE__)
 #endif // UNIT_TEST_MEMORY_TRACKING
@@ -718,21 +721,22 @@ static void _UT_register_test(_UT_TestInfo *test_info)
  * @param TestDescription A descriptive name for the test case.
  * @param ... A variadic list of key-value pairs to specify exit conditions.
  *        Possible keys:
- *        - .expected_msg: A substring expected to be present in stderr.
  *        - .expected_signal: The signal number expected to terminate the process (POSIX-only).
  *        - .expected_exit_code: The exact exit code expected from the process.
+ *        - .expected_assert_msg: The exact custom message from an assert(.. && "message").
+ *        - .is_exact_assert_check: Flag (1 or 0) for exact or similar message matching.
  */
-#define TEST_DEATH_CASE(SuiteName, TestDescription, ...)                                                                                          \
-    static void _UT_CONCAT(test_func_, __LINE__)(void);                                                                                           \
-    _UT_GCC_DIAG_PUSH                                                                                                                             \
-    _UT_GCC_DIAG_IGNORE_OVERRIDE_INIT                                                                                                             \
-    _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__))                                                                                      \
-    {                                                                                                                                             \
-        static _UT_DeathExpect de = {.expected_msg = NULL, .expected_signal = 0, .expected_exit_code = -1, .min_similarity = 0.95f, __VA_ARGS__}; \
-        static _UT_TestInfo ti = {#SuiteName, #TestDescription, _UT_CONCAT(test_func_, __LINE__), &de, NULL};                                     \
-        _UT_register_test(&ti);                                                                                                                   \
-    }                                                                                                                                             \
-    _UT_GCC_DIAG_POP                                                                                                                              \
+#define TEST_DEATH_CASE(SuiteName, TestDescription, ...)                                                                                                        \
+    static void _UT_CONCAT(test_func_, __LINE__)(void);                                                                                                          \
+    _UT_GCC_DIAG_PUSH                                                                                                                                             \
+    _UT_GCC_DIAG_IGNORE_OVERRIDE_INIT                                                                                                                             \
+    _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__))                                                                                                      \
+    {                                                                                                                                                             \
+        static _UT_DeathExpect de = {.expected_signal = 0, .expected_exit_code = -1, .min_similarity = 0.95f, .expected_assert_msg = NULL, .is_exact_assert_check = 0, __VA_ARGS__}; \
+        static _UT_TestInfo ti = {#SuiteName, #TestDescription, _UT_CONCAT(test_func_, __LINE__), &de, NULL};                                                      \
+        _UT_register_test(&ti);                                                                                                                                   \
+    }                                                                                                                                                             \
+    _UT_GCC_DIAG_POP                                                                                                                                              \
     static void _UT_CONCAT(test_func_, __LINE__)(void)
 
 #endif // UNIT_TEST_DECLARATION
@@ -959,15 +963,23 @@ void _UT_print_string(char *buf, size_t size, const char *val);
  * @param SuiteName The name of the test suite.
  * @param TestDescription A descriptive name for the test case.
  */
-#define TEST_ASSERTION_FAILURE(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = _UT_ASSERT_EXIT_CODE, .expected_msg = NULL)
+#define TEST_ASSERTION_FAILURE(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = _UT_ASSERT_EXIT_CODE)
 /**
- * @brief Defines a test case that is expected to fail with a standard C assertion and
- *        verifies that the assertion message in stderr contains a specific substring.
+ * @brief Defines a test case that is expected to fail with an assertion, and verifies
+ *        that the custom assertion message is an exact match.
  * @param SuiteName The name of the test suite.
  * @param TestDescription A descriptive name for the test case.
- * @param expected_substring The substring to find within the stderr output.
+ * @param expected_exact_msg The exact string from the assert(... && "message") to match.
  */
-#define TEST_ASSERTION_FAILURE_WITH_MESSAGE(SuiteName, TestDescription, expected_substring) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = _UT_ASSERT_EXIT_CODE, .expected_msg = (expected_substring))
+#define TEST_ASSERTION_FAILURE_WITH_EXACT_MESSAGE(SuiteName, TestDescription, expected_exact_msg) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = _UT_ASSERT_EXIT_CODE, .expected_assert_msg = (expected_exact_msg), .is_exact_assert_check = 1)
+/**
+ * @brief Defines a test case that is expected to fail with an assertion, and verifies
+ *        that the custom assertion message is similar to the expected one.
+ * @param SuiteName The name of the test suite.
+ * @param TestDescription A descriptive name for the test case.
+ * @param expected_similar_msg The string from the assert(... && "message") to compare against.
+ */
+#define TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(SuiteName, TestDescription, expected_similar_msg, ...) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_exit_code = _UT_ASSERT_EXIT_CODE, .expected_assert_msg = (expected_similar_msg), .is_exact_assert_check = 0, __VA_ARGS__ )
 #else
 /**
  * @brief Defines a test case that is expected to fail with a standard C assertion.
@@ -975,15 +987,23 @@ void _UT_print_string(char *buf, size_t size, const char *val);
  * @param SuiteName The name of the test suite.
  * @param TestDescription A descriptive name for the test case.
  */
-#define TEST_ASSERTION_FAILURE(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT, .expected_msg = NULL)
+#define TEST_ASSERTION_FAILURE(SuiteName, TestDescription) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT)
 /**
- * @brief Defines a test case that is expected to fail with a standard C assertion and
- *        verifies that the assertion message in stderr contains a specific substring.
+ * @brief Defines a test case that is expected to fail with an assertion, and verifies
+ *        that the custom assertion message is an exact match.
  * @param SuiteName The name of the test suite.
  * @param TestDescription A descriptive name for the test case.
- * @param expected_substring The substring to find within the stderr output.
+ * @param expected_exact_msg The exact string from the assert(... && "message") to match.
  */
-#define TEST_ASSERTION_FAILURE_WITH_MESSAGE(SuiteName, TestDescription, expected_substring) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT, .expected_msg = (expected_substring))
+#define TEST_ASSERTION_FAILURE_WITH_EXACT_MESSAGE(SuiteName, TestDescription, expected_exact_msg) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT, .expected_assert_msg = (expected_exact_msg), .is_exact_assert_check = 1)
+/**
+ * @brief Defines a test case that is expected to fail with an assertion, and verifies
+ *        that the custom assertion message is similar to the expected one.
+ * @param SuiteName The name of the test suite.
+ * @param TestDescription A descriptive name for the test case.
+ * @param expected_similar_msg The string from the assert(... && "message") to compare against.
+ */
+#define TEST_ASSERTION_FAILURE_WITH_SIMILAR_MESSAGE(SuiteName, TestDescription, expected_similar_msg, ...) TEST_DEATH_CASE(SuiteName, TestDescription, .expected_signal = SIGABRT, .expected_assert_msg = (expected_similar_msg), .is_exact_assert_check = 0, __VA_ARGS__ )
 #endif
 
 #ifndef UT_DEFAULT_FLOAT_TOLERANCE
@@ -1316,7 +1336,7 @@ float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
         if (!e || strcmp(e, _UT_stdout_capture_buffer) != 0)                                                \
         {                                                                                                   \
             char cond_str[256];                                                                             \
-            snprintf(cond_str, sizeof(cond_str), _UT_TAG_STDOUT "output of '%s' equals '%s'", #code_block, #expected_str); \
+            snprintf(cond_str, sizeof(cond_str), "[STDOUT]output of '%s' equals '%s'", #code_block, #expected_str); \
             _UT_record_failure(__FILE__, __LINE__, cond_str, e, _UT_stdout_capture_buffer);                 \
         }                                                                                                   \
     } while (0)
@@ -1340,7 +1360,7 @@ float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
         if (strcmp(expected_normalized, actual_normalized) != 0)                                                                \
         {                                                                                                                       \
             char condition_str[256];                                                                                            \
-            snprintf(condition_str, sizeof(condition_str), _UT_TAG_STDOUT "output of '%s' is equivalent to '%s'", #code_block, #expected_str); \
+            snprintf(condition_str, sizeof(condition_str), "[STDOUT]output of '%s' is equivalent to '%s'", #code_block, #expected_str); \
             _UT_record_failure(__FILE__, __LINE__, condition_str, expected_str, _UT_stdout_capture_buffer);                     \
         }                                                                                                                       \
     } while (0)
@@ -1360,7 +1380,7 @@ float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
             char expected_buf[256], actual_buf[sizeof(_UT_stdout_capture_buffer) + 128], condition_str[256];                                            \
             snprintf(expected_buf, sizeof(expected_buf), "A string with at least %.2f%% similarity to \"%s\"", (min_similarity) * 100.0f, e);           \
             snprintf(actual_buf, sizeof(actual_buf), "A string with %.2f%% similarity: \"%s\"", actual_similarity * 100.0f, _UT_stdout_capture_buffer); \
-            snprintf(condition_str, sizeof(condition_str), _UT_TAG_STDOUT "similarity(output_of(%s), \"%s\") >= %.2f", #code_block, #expected_str, (min_similarity));  \
+            snprintf(condition_str, sizeof(condition_str), "[STDOUT]similarity(output_of(%s), \"%s\") >= %.2f", #code_block, #expected_str, (min_similarity));  \
             _UT_record_failure(__FILE__, __LINE__, condition_str, expected_buf, actual_buf);                                                            \
         }                                                                                                                                               \
     } while (0)
@@ -1523,11 +1543,53 @@ void _UT_normalize_string_for_comparison(char *str)
 #define _UT_ARG_SUITE_FILTER_LEN (sizeof(_UT_ARG_SUITE_FILTER) - 1)
 #define _UT_TAG_STDOUT "[STDOUT]"
 #define _UT_TAG_STDOUT_LEN (sizeof(_UT_TAG_STDOUT) - 1)
-#define _UT_ASSERT_EXIT_CODE 64353
 
 /*============================================================================*/
 /* SECTION 7: THE UT_RUN_ALL_TESTS IMPLEMENTATION (FULL VERSION)              */
 /*============================================================================*/
+
+/**
+ * @brief Extracts the custom message from an assert(expr && "message") failure string.
+ *
+ * @param full_output The complete stderr output from an assertion failure.
+ * @return A newly allocated string containing only the custom message, or NULL if
+ *         the specific message format is not found. The caller must free the returned string.
+ */
+static char *_UT_extract_assert_message(const char *full_output)
+{
+    if (!full_output)
+    {
+        return NULL;
+    }
+
+    const char *start_delimiter = " && \"";
+    const char *start_ptr = strstr(full_output, start_delimiter);
+
+    if (!start_ptr)
+    {
+        return NULL; // Delimiter not found
+    }
+
+    start_ptr += strlen(start_delimiter); // Move pointer to the beginning of the actual message
+
+    const char *end_ptr = strchr(start_ptr, '"');
+    if (!end_ptr)
+    {
+        return NULL; // Closing quote not found
+    }
+
+    size_t message_len = end_ptr - start_ptr;
+    char *extracted_message = (char *)malloc(message_len + 1);
+    if (!extracted_message)
+    {
+        return NULL; // Allocation failed
+    }
+
+    memcpy(extracted_message, start_ptr, message_len);
+    extracted_message[message_len] = '\0';
+
+    return extracted_message;
+}
 
 // --- Helper functions for serializing/deserializing test results ---
 // These are simple text-based functions for IPC between parent and child.
@@ -1701,6 +1763,7 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
     DWORD bytes_read = 0;
     ReadFile(h_read, output_buffer, sizeof(output_buffer) - 1, &bytes_read, NULL);
     output_buffer[bytes_read] = '\0';
+    // Initially, store the raw output. This will be overwritten if a specific death test message check fails.
     result->captured_output = _UT_strdup(output_buffer);
 
     DWORD exit_code;
@@ -1713,10 +1776,51 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
     if (de)
     {
         int exit_ok = 1, msg_ok = 1;
+
         if (de->expected_exit_code != -1 && exit_code != (DWORD)de->expected_exit_code)
             exit_ok = 0;
-        if (de->expected_msg && _ut_calculate_similarity_ratio(de->expected_msg, output_buffer) < de->min_similarity)
-            msg_ok = 0;
+
+        if (de->expected_assert_msg)
+        {
+            char *extracted_msg = _UT_extract_assert_message(output_buffer);
+            if (!extracted_msg)
+            {
+                msg_ok = 0;
+                free(result->captured_output);
+                char failure_reason[1024];
+                // Safely format the failure message to prevent truncation warnings
+                const int max_len = sizeof(failure_reason) - strlen(de->expected_assert_msg) - 150;
+                snprintf(failure_reason, sizeof(failure_reason), "Death test failed: Could not extract custom assertion message.\nExpected message: \"%s\"\nGot full output:\n---\n%.*s...---", de->expected_assert_msg, max_len > 0 ? max_len : 0, output_buffer);
+                result->captured_output = _UT_strdup(failure_reason);
+            }
+            else
+            {
+                if (de->is_exact_assert_check)
+                {
+                    if (strcmp(extracted_msg, de->expected_assert_msg) != 0)
+                    {
+                        msg_ok = 0;
+                        free(result->captured_output);
+                        char failure_reason[1024];
+                        snprintf(failure_reason, sizeof(failure_reason), "Death test failed: Assertion message mismatch (exact check).\n  Expected: %s\"%s\"%s\n  Got:      %s\"%s\"%s",KGRN ,de->expected_assert_msg, KNRM, KRED, extracted_msg, KNRM);
+                        result->captured_output = _UT_strdup(failure_reason);
+                    }
+                }
+                else
+                {
+                    float similarity = _ut_calculate_similarity_ratio(extracted_msg, de->expected_assert_msg);
+                    if (similarity < de->min_similarity)
+                    {
+                        msg_ok = 0;
+                        free(result->captured_output);
+                        char failure_reason[1024];
+                        snprintf(failure_reason, sizeof(failure_reason), "Death test failed: Assertion message mismatch (similar check).\n  Expected: %s\"%s\"%s\n  Got:      %s\"%s\"%s (Similarity: %.2f%%)", KGRN, de->expected_assert_msg, KNRM, KRED, extracted_msg, KNRM, similarity * 100.0f);
+                        result->captured_output = _UT_strdup(failure_reason);
+                    }
+                }
+                free(extracted_msg);
+            }
+        }
 
         if (exit_code != 0 && exit_ok && msg_ok)
         {
@@ -1813,6 +1917,7 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
             output_buffer[bytes_read] = '\0';
         close(out_pipe[0]);
 
+        // Initially, store the raw output. This will be overwritten if a specific death test message check fails.
         UT_disable_memory_tracking();
         result->captured_output = _UT_strdup(output_buffer);
         UT_enable_memory_tracking();
@@ -1827,22 +1932,63 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
         if (de)
         {
             int sig_ok = 1, exit_ok = 1, msg_ok = 1;
+
             if (WIFSIGNALED(status))
             {
-                if (de->expected_signal == 0 || WTERMSIG(status) != de->expected_signal)
+                if (de->expected_signal != 0 && WTERMSIG(status) != de->expected_signal)
                     sig_ok = 0;
             }
             else if (WIFEXITED(status))
             {
-                if (de->expected_exit_code == -1 || WEXITSTATUS(status) != de->expected_exit_code)
+                if (de->expected_exit_code != -1 && WEXITSTATUS(status) != de->expected_exit_code)
                     exit_ok = 0;
             }
             else
             {
                 sig_ok = exit_ok = 0;
             }
-            if (de->expected_msg && _ut_calculate_similarity_ratio(de->expected_msg, output_buffer) < de->min_similarity)
-                msg_ok = 0;
+
+            if (de->expected_assert_msg)
+            {
+                char *extracted_msg = _UT_extract_assert_message(output_buffer);
+                if (!extracted_msg)
+                {
+                    msg_ok = 0;
+                    free(result->captured_output);
+                    char failure_reason[1024];
+                    // Safely format the failure message to prevent truncation warnings
+                    const int max_len = sizeof(failure_reason) - strlen(de->expected_assert_msg) - 150;
+                    snprintf(failure_reason, sizeof(failure_reason), "Death test failed: Could not extract custom assertion message.\nExpected message: \"%s\"\nGot full output:\n---\n%.*s...---", de->expected_assert_msg, max_len > 0 ? max_len : 0, output_buffer);
+                    result->captured_output = _UT_strdup(failure_reason);
+                }
+                else
+                {
+                    if (de->is_exact_assert_check)
+                    {
+                        if (strcmp(extracted_msg, de->expected_assert_msg) != 0)
+                        {
+                            msg_ok = 0;
+                            free(result->captured_output);
+                            char failure_reason[1024];
+                            snprintf(failure_reason, sizeof(failure_reason), "Death test failed: Assertion message mismatch (exact check).\n  Expected: %s\"%s\"%s\n  Got:      %s\"%s\"%s", KGRN, de->expected_assert_msg, KNRM, KRED, extracted_msg, KNRM);
+                            result->captured_output = _UT_strdup(failure_reason);
+                        }
+                    }
+                    else
+                    {
+                        float similarity = _ut_calculate_similarity_ratio(extracted_msg, de->expected_assert_msg);
+                        if (similarity < de->min_similarity)
+                        {
+                            msg_ok = 0;
+                            free(result->captured_output);
+                            char failure_reason[1024];
+                            snprintf(failure_reason, sizeof(failure_reason), "Death test failed: Assertion message mismatch (similar check).\n  Expected: %s\"%s\"%s\n  Got:      %s\"%s\"%s (Similarity: %.2f%%)", KGRN, de->expected_assert_msg, KNRM, KRED, extracted_msg, KNRM, similarity * 100.0f);
+                            result->captured_output = _UT_strdup(failure_reason);
+                        }
+                    }
+                    free(extracted_msg);
+                }
+            }
 
             if ((WIFSIGNALED(status) || WIFEXITED(status)) && sig_ok && exit_ok && msg_ok)
             {
@@ -1962,40 +2108,48 @@ static void _UT_console_on_test_finish(const _UT_TestResult *test)
         break;
     case _UT_STATUS_FAILED:
         printf("\n   %sFAILED%s (%.2f ms)\n", KRED, KNRM, test->duration_ms);
-        _UT_AssertionFailure *f = test->failures;
-        while (f)
+        if (test->failures)
         {
-            // Check if this is a tagged stdout assertion
-            if (strncmp(f->condition_str, _UT_TAG_STDOUT, _UT_TAG_STDOUT_LEN) == 0)
+            _UT_AssertionFailure *f = test->failures;
+            while (f)
             {
-                // -- PATH 1: STDOUT assertion with escaped printing --
-                // Print condition string, skipping the tag for cleaner output
-                fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", f->condition_str + _UT_TAG_STDOUT_LEN, f->file, f->line);
-
-                if (f->expected_str)
+                // Check if this is a tagged stdout assertion
+                if (strncmp(f->condition_str, _UT_TAG_STDOUT, _UT_TAG_STDOUT_LEN) == 0)
                 {
-                    fprintf(stderr, "   Expected: %s", KGRN);
-                    _UT_print_escaped_string(stderr, f->expected_str);
-                    fprintf(stderr, "%s\n", KNRM);
-                }
-                if (f->actual_str)
-                {
-                    fprintf(stderr, "   Got: %s", KRED);
-                    _UT_print_escaped_string(stderr, f->actual_str);
-                    fprintf(stderr, "%s\n", KNRM);
-                }
-            }
-            else
-            {
-                // -- PATH 2: All other assertions with standard printing --
-                fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", f->condition_str, f->file, f->line);
+                    // -- PATH 1: STDOUT assertion with escaped printing --
+                    // Print condition string, skipping the tag for cleaner output
+                    fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", f->condition_str + _UT_TAG_STDOUT_LEN, f->file, f->line);
 
-                if (f->expected_str)
-                    fprintf(stderr, "   Expected: %s%s%s\n", KGRN, f->expected_str, KNRM);
-                if (f->actual_str)
-                    fprintf(stderr, "   Got: %s%s%s\n", KRED, f->actual_str, KNRM);
+                    if (f->expected_str)
+                    {
+                        fprintf(stderr, "   Expected: %s", KGRN);
+                        _UT_print_escaped_string(stderr, f->expected_str);
+                        fprintf(stderr, "%s\n", KNRM);
+                    }
+                    if (f->actual_str)
+                    {
+                        fprintf(stderr, "   Got: %s", KRED);
+                        _UT_print_escaped_string(stderr, f->actual_str);
+                        fprintf(stderr, "%s\n", KNRM);
+                    }
+                }
+                else
+                {
+                    // -- PATH 2: All other assertions with standard printing --
+                    fprintf(stderr, "   Assertion failed: %s\n      At: %s:%d\n", f->condition_str, f->file, f->line);
+
+                    if (f->expected_str)
+                        fprintf(stderr, "   Expected: %s%s%s\n", KGRN, f->expected_str, KNRM);
+                    if (f->actual_str)
+                        fprintf(stderr, "   Got: %s%s%s\n", KRED, f->actual_str, KNRM);
+                }
+                f = f->next;
             }
-            f = f->next;
+        }
+        else
+        {
+            // This path is for death test failures, where we print the detailed captured output.
+            fprintf(stderr, "   %s\n", test->captured_output ? test->captured_output : "(No details available)");
         }
         break;
     case _UT_STATUS_CRASHED:
