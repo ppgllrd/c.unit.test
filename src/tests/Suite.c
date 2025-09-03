@@ -26,7 +26,7 @@ static void __p(char* buf, size_t size, struct CircularLinkedList* list) {
     _p(buf, size, (struct Y*)list);
 }
 
-#define EQUAL_CIRCULAR_LINKED_LIST(list, expected) EQUAL_BY(list, expected, _equalLists, __p)
+#define EQUAL_CIRCULAR_LINKED_LIST(expected, actual) EQUAL_BY(expected, actual, _equalLists, __p)
 
 /*============================================================================*/
 /* TEST SUITE A: CircularLinkedList_new                                       */
@@ -35,8 +35,8 @@ TEST_CASE(CircularLinkedList_new, "Creates a non-NULL list structure") {
     // result is non NULL, and p_last is NULL and size is 0
     UT_disable_leak_check();
     struct CircularLinkedList* list = CircularLinkedList_new();
-    NON_EQUAL_NULL(list);
-    EQUAL_NULL(list->p_last);
+    REFUTE_NULL(list);
+    ASSERT_NULL(list->p_last);
     EQUAL_INT(0, list->size);
 }
 TEST_CASE(CircularLinkedList_new, "Allocates exactly one block and frees none") {
@@ -66,7 +66,7 @@ TEST_CASE(CircularLinkedList_insert, "Inserts into an empty list") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_insert(list, 10);
     }, 1, 0, sizeof(struct Node), 0);
-    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
+    EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_insert, "Inserts smaller element at the beginning") {
     // check that after insertion, the list is correctly updated and one node was allocated
@@ -76,7 +76,7 @@ TEST_CASE(CircularLinkedList_insert, "Inserts smaller element at the beginning")
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_insert(list, 5);
     }, 1, 0, sizeof(struct Node), 0);
-    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
+    EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_insert, "Inserts larger element at the end") {
     // check that after insertion, the list is correctly updated and one node was allocated
@@ -86,7 +86,7 @@ TEST_CASE(CircularLinkedList_insert, "Inserts larger element at the end") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_insert(list, 40);
     }, 1, 0, sizeof(struct Node), 0);
-    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
+    EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_insert, "Inserts an element in the middle") {
     // check that after insertion, the list is correctly updated and one node was allocated
@@ -96,7 +96,7 @@ TEST_CASE(CircularLinkedList_insert, "Inserts an element in the middle") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_insert(list, 30);
     }, 1, 0, sizeof(struct Node), 0);
-    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
+    EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 
 /*============================================================================*/
@@ -130,7 +130,7 @@ TEST_CASE(CircularLinkedList_remove, "Removes the only element") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_remove(list, 0);
     }, 0, 1, 0, sizeof(struct Node));
-    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
+    EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_remove, "Removes the first element") {
     // check that one node is freed and the first element is correctly removed
@@ -140,7 +140,7 @@ TEST_CASE(CircularLinkedList_remove, "Removes the first element") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_remove(list, 0);
     }, 0, 1, 0, sizeof(struct Node));
-    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
+    EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_remove, "Removes the last element") {
     // check that one node is freed and the last element is correctly removed
@@ -150,7 +150,7 @@ TEST_CASE(CircularLinkedList_remove, "Removes the last element") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_remove(list, 2);
     }, 0, 1, 0, sizeof(struct Node));
-    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
+    EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_remove, "Removes an element from the middle") {
     // check that one node is freed and the middle element is correctly removed
@@ -160,7 +160,7 @@ TEST_CASE(CircularLinkedList_remove, "Removes an element from the middle") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_remove(list, 1);
     }, 0, 1, 0, sizeof(struct Node));
-    EQUAL_CIRCULAR_LINKED_LIST(list, expected);
+    EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 
 /*============================================================================*/
@@ -227,7 +227,7 @@ TEST_CASE(CircularLinkedList_free, "Frees an empty list correctly") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_free(&list);
     }, 0, 1, 0, sizeof(struct CircularLinkedList));
-    EQUAL_NULL(list);
+    ASSERT_NULL(list);
 }
 TEST_CASE(CircularLinkedList_free, "Frees a single element list correctly") {
     // check that two blocks (list struct and one node) are freed and the list pointer is set to NULL
@@ -236,7 +236,7 @@ TEST_CASE(CircularLinkedList_free, "Frees a single element list correctly") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_free(&list);
     }, 0, 2, 0, sizeof(struct CircularLinkedList) + sizeof(struct Node));
-    EQUAL_NULL(list);
+    ASSERT_NULL(list);
 }
 TEST_CASE(CircularLinkedList_free, "Frees all memory for a multi element list") {
     // check that all blocks (list struct and all nodes) are freed and the list pointer is set to NULL
@@ -245,7 +245,7 @@ TEST_CASE(CircularLinkedList_free, "Frees all memory for a multi element list") 
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_free(&list);
     }, 0, 4, 0, sizeof(struct CircularLinkedList) + (3 * sizeof(struct Node)));
-    EQUAL_NULL(list);
+    ASSERT_NULL(list);
 }
 
 /*============================================================================*/
