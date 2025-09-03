@@ -75,6 +75,7 @@
 #ifndef UNIT_TEST_H
 #define UNIT_TEST_H
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -444,13 +445,13 @@ static void _UT_register_test(_UT_TestInfo *test_info)
  * @param SuiteName The name of the test suite to which this test belongs.
  * @param TestDescription A descriptive name for the test case.
  */
-#define TEST_CASE(SuiteName, TestDescription)                                                              \
-    static void _UT_CONCAT(test_func_, __LINE__)(void);                                                    \
-    _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__))                                               \
-    {                                                                                                      \
+#define TEST_CASE(SuiteName, TestDescription)                                                                 \
+    static void _UT_CONCAT(test_func_, __LINE__)(void);                                                       \
+    _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__))                                                  \
+    {                                                                                                         \
         static _UT_TestInfo ti = {#SuiteName, TestDescription, _UT_CONCAT(test_func_, __LINE__), NULL, NULL}; \
-        _UT_register_test(&ti);                                                                            \
-    }                                                                                                      \
+        _UT_register_test(&ti);                                                                               \
+    }                                                                                                         \
     static void _UT_CONCAT(test_func_, __LINE__)(void)
 
 // Helper macros for conditionally suppressing GCC warnings
@@ -479,18 +480,17 @@ static void _UT_register_test(_UT_TestInfo *test_info)
  *        - .expected_assert_msg: The exact custom message from an assert(.. && "message").
  *        - .is_exact_assert_check: Flag (1 or 0) for exact or similar message matching.
  */
-#define TEST_DEATH_CASE(SuiteName, TestDescription, ...)                                                                                                          \
-    static void _UT_CONCAT(test_func_, __LINE__)(void);                                                                                                           \
-    _UT_GCC_DIAG_PUSH                                                                                                                                             \
-    _UT_GCC_DIAG_IGNORE_OVERRIDE_INIT                                                                                                                             \
-    _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__))                                                                                                      \
-    {                                                                                                                                                             \
-        static _UT_DeathExpect de =                                                                                                                               \                                              
-          {.expected_signal = 0, .expected_exit_code = -1, .min_similarity = 0.95f, .expected_assert_msg = NULL, .is_exact_assert_check = 0, __VA_ARGS__};        \
-        static _UT_TestInfo ti = {#SuiteName, TestDescription, _UT_CONCAT(test_func_, __LINE__), &de, NULL};                                                      \
-        _UT_register_test(&ti);                                                                                                                                   \
-    }                                                                                                                                                             \
-    _UT_GCC_DIAG_POP                                                                                                                                              \
+#define TEST_DEATH_CASE(SuiteName, TestDescription, ...)                                                                                                                             \
+    static void _UT_CONCAT(test_func_, __LINE__)(void);                                                                                                                              \
+    _UT_GCC_DIAG_PUSH                                                                                                                                                                \
+    _UT_GCC_DIAG_IGNORE_OVERRIDE_INIT                                                                                                                                                \
+    _TEST_INITIALIZER(_UT_CONCAT(test_registrar_, __LINE__))                                                                                                                         \
+    {                                                                                                                                                                                \
+        static _UT_DeathExpect de = {.expected_signal = 0, .expected_exit_code = -1, .min_similarity = 0.95f, .expected_assert_msg = NULL, .is_exact_assert_check = 0, __VA_ARGS__}; \
+        static _UT_TestInfo ti = {#SuiteName, TestDescription, _UT_CONCAT(test_func_, __LINE__), &de, NULL};                                                                         \
+        _UT_register_test(&ti);                                                                                                                                                      \
+    }                                                                                                                                                                                \
+    _UT_GCC_DIAG_POP                                                                                                                                                                 \
     static void _UT_CONCAT(test_func_, __LINE__)(void)
 
 #endif // UNIT_TEST_DECLARATION
@@ -1081,24 +1081,24 @@ float _ut_calculate_similarity_ratio(const char *s1, const char *s2);
  * @param min_similarity A float value between 0.0 and 1.0 indicating the minimum
  *                       required similarity ratio (Levenshtein distance based).
  */
-#define ASSERT_STDOUT_SIMILAR(code_block, expected_str, min_similarity)                                                                                         \
-    do                                                                                                                                                          \
-    {                                                                                                                                                           \
-        _UT_start_capture_stdout();                                                                                                                             \
-        {                                                                                                                                                       \
-            code_block;                                                                                                                                         \
-        }                                                                                                                                                       \
-        _UT_stop_capture_stdout(_UT_stdout_capture_buffer, sizeof(_UT_stdout_capture_buffer));                                                                  \
-        const char *e = (expected_str);                                                                                                                         \
-        float actual_similarity = _ut_calculate_similarity_ratio(e, _UT_stdout_capture_buffer);                                                                 \
-        if (actual_similarity < (min_similarity))                                                                                                               \
-        {                                                                                                                                                       \
-            char expected_buf[256], actual_buf[sizeof(_UT_stdout_capture_buffer) + 128], condition_str[256];                                                    \
-            snprintf(expected_buf, sizeof(expected_buf), "A string with at least %.2f%% similarity to \"%s\"", (min_similarity) * 100.0f, e);                   \
-            snprintf(actual_buf, sizeof(actual_buf), "A string with %.2f%% similarity: \"%s\"", actual_similarity * 100.0f, _UT_stdout_capture_buffer);         \
-            snprintf(condition_str, sizeof(condition_str), "[STDOUT]similarity(output_of(%s), \"%s\") >= %.2f", #code_block, #expected_str, (min_similarity));  \
-            _UT_record_failure(__FILE__, __LINE__, condition_str, expected_buf, actual_buf);                                                                    \
-        }                                                                                                                                                       \
+#define ASSERT_STDOUT_SIMILAR(code_block, expected_str, min_similarity)                                                                                        \
+    do                                                                                                                                                         \
+    {                                                                                                                                                          \
+        _UT_start_capture_stdout();                                                                                                                            \
+        {                                                                                                                                                      \
+            code_block;                                                                                                                                        \
+        }                                                                                                                                                      \
+        _UT_stop_capture_stdout(_UT_stdout_capture_buffer, sizeof(_UT_stdout_capture_buffer));                                                                 \
+        const char *e = (expected_str);                                                                                                                        \
+        float actual_similarity = _ut_calculate_similarity_ratio(e, _UT_stdout_capture_buffer);                                                                \
+        if (actual_similarity < (min_similarity))                                                                                                              \
+        {                                                                                                                                                      \
+            char expected_buf[256], actual_buf[sizeof(_UT_stdout_capture_buffer) + 128], condition_str[256];                                                   \
+            snprintf(expected_buf, sizeof(expected_buf), "A string with at least %.2f%% similarity to \"%s\"", (min_similarity) * 100.0f, e);                  \
+            snprintf(actual_buf, sizeof(actual_buf), "A string with %.2f%% similarity: \"%s\"", actual_similarity * 100.0f, _UT_stdout_capture_buffer);        \
+            snprintf(condition_str, sizeof(condition_str), "[STDOUT]similarity(output_of(%s), \"%s\") >= %.2f", #code_block, #expected_str, (min_similarity)); \
+            _UT_record_failure(__FILE__, __LINE__, condition_str, expected_buf, actual_buf);                                                                   \
+        }                                                                                                                                                      \
     } while (0)
 
 #endif // UNIT_TEST_DECLARATION
@@ -1252,7 +1252,7 @@ static _UT_TestResult *_UT_deserialize_result(const char *buffer, _UT_TestInfo *
     result->suite_name = test_info->suite_name;
     result->test_name = test_info->test_name;
 
-    char line[4096]; 
+    char line[4096];
     const char *p = buffer;
     while (p && *p)
     {
@@ -1349,10 +1349,41 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char *argv[]);
 // ============================================================================
 // PROCESS RUNNER FOR WINDOWS
 // ============================================================================
+
+char *_UT_expand_quotes(const char *input)
+{
+    if (!input)
+        return NULL;
+
+    size_t len = strlen(input);
+    // Worst case: every character is a quote needing escaping, plus surrounding quotes
+    size_t max_len = len * 2 + 3;
+    char *output = (char *)malloc(max_len);
+    if (!output)
+        return NULL;
+
+    char *out_ptr = output;
+    *out_ptr++ = '"';
+    for (size_t i = 0; i < len; ++i)
+    {
+        if (input[i] == '"')
+        {
+            *out_ptr++ = '\\'; // Escape quote
+        }
+        *out_ptr++ = input[i];
+    }
+    *out_ptr++ = '"';
+    *out_ptr = '\0';
+    return output;
+}   
+
 static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *executable_path)
 {
     char command_line[2048];
-    snprintf(command_line, sizeof(command_line), "\"%s\" %s \"%s\" \\\"%s\\\"", executable_path, _UT_ARG_RUN_TEST, test->suite_name, test->test_name);
+    char *expanded_test_name = _UT_expand_quotes(test->test_name);
+    snprintf(command_line, sizeof(command_line), "\"%s\" %s \"%s\" %s", executable_path, _UT_ARG_RUN_TEST, test->suite_name, expanded_test_name);
+    free(expanded_test_name);
+
     HANDLE h_read = NULL, h_write = NULL;
     SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), NULL, TRUE};
     if (!CreatePipe(&h_read, &h_write, &sa, 0))
@@ -1436,7 +1467,7 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
                         msg_ok = 0;
                         free(result->captured_output);
                         char failure_reason[1024];
-                        snprintf(failure_reason, sizeof(failure_reason), "Death test failed: Assertion message mismatch (exact check).\n  Expected: %s\"%s\"%s\n  Got:      %s\"%s\"%s",KGRN ,de->expected_assert_msg, KNRM, KRED, extracted_msg, KNRM);
+                        snprintf(failure_reason, sizeof(failure_reason), "Death test failed: Assertion message mismatch (exact check).\n  Expected: %s\"%s\"%s\n  Got:      %s\"%s\"%s", KGRN, de->expected_assert_msg, KNRM, KRED, extracted_msg, KNRM);
                         result->captured_output = _UT_strdup(failure_reason);
                     }
                 }
@@ -1875,9 +1906,29 @@ static _UT_Reporter _UT_ConsoleReporter = {
 
 int _UT_RUN_ALL_TESTS_impl(int argc, char *argv[])
 {
-    // ================== CHILD PROCESS EXECUTION ==================
-    if (argc == 4 && strcmp(argv[1], _UT_ARG_RUN_TEST) == 0)
+    // Primero, comprobamos si el proceso fue invocado con la intención de ser un "hijo".
+    // La presencia del flag "--run_test" es el indicador clave.
+    bool is_child_process_invocation = (argc > 1 && strcmp(argv[1], _UT_ARG_RUN_TEST) == 0);
+
+    if (is_child_process_invocation)
     {
+        // ================== CHILD PROCESS EXECUTION ==================
+        if (argc != 4)
+        {
+            // Argument count is incorrect for a child process invocation.
+            fprintf(stderr, "\nFATAL TEST RUNNER ERROR:\n");
+            fprintf(stderr, "  Test process invoked with incorrect arguments.\n");
+            fprintf(stderr, "  Expected 4 arguments for a child process, but received %d.\n", argc);
+            fprintf(stderr, "  This is often caused by unescaped characters (like quotes) in test names on Windows.\n");
+            fprintf(stderr, "  Arguments received:\n");
+            for (int i = 0; i < argc; ++i)
+            {
+                fprintf(stderr, "    argv[%d]: \"%s\"\n", i, argv[i]);
+            }
+            exit(255); // Exit with a high error code to indicate a framework failure.
+        }
+
+        // Arguments are correct (argc == 4), proceed to run the test.
         _UT_TestInfo *current = _UT_registry_head;
         while (current)
         {
@@ -1918,129 +1969,132 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char *argv[])
         fprintf(stderr, "Error: Test '%s.%s' not found in registry.\n", argv[2], argv[3]);
         return 1;
     }
-
-    // ================== PARENT PROCESS (TEST RUNNER) ==================
-
-    _UT_init_colors();
-    _UT_is_ci_mode = getenv("CI") != NULL;         // Enable CI mode if CI env var is set
-    _UT_Reporter *reporter = &_UT_ConsoleReporter; // Default reporter
-
-    const char *suite_filter = NULL;
-    for (int i = 1; i < argc; ++i)
+    else
     {
-        if (strncmp(argv[i], _UT_ARG_SUITE_FILTER, _UT_ARG_SUITE_FILTER_LEN) == 0)
+        // ================== PARENT PROCESS (TEST RUNNER) ==================
+        // The flag "--run_test" is not present, so this is the main runner process.
+        _UT_init_memory_tracking();
+        _UT_init_colors();
+        _UT_is_ci_mode = getenv("CI") != NULL;         // Enable CI mode if CI env var is set
+        _UT_Reporter *reporter = &_UT_ConsoleReporter; // Default reporter
+
+        const char *suite_filter = NULL;
+        for (int i = 1; i < argc; ++i)
         {
-            suite_filter = argv[i] + _UT_ARG_SUITE_FILTER_LEN;
-            break;
-        }
-    }
-
-    _UT_TestRun test_run = {0};
-    _UT_SuiteResult *all_suites_array[_UT_MAX_SUITES] = {0};
-
-    const char *executable_path = argv[0];
-    _UT_TestInfo *current_test_info = _UT_registry_head;
-
-    _UT_SuiteResult *current_suite_result = NULL;
-    const char *current_suite_name = "";
-
-    struct timespec run_start_time, run_end_time;
-    clock_gettime(CLOCK_MONOTONIC, &run_start_time);
-
-    if (reporter->on_run_start)
-        reporter->on_run_start(&test_run);
-
-    while (current_test_info)
-    {
-        if (!suite_filter || strcmp(current_test_info->suite_name, suite_filter) == 0)
-        {
-            // If suite has changed, finalize the old one and start a new one
-            if (strcmp(current_suite_name, current_test_info->suite_name) != 0)
+            if (strncmp(argv[i], _UT_ARG_SUITE_FILTER, _UT_ARG_SUITE_FILTER_LEN) == 0)
             {
-                if (current_suite_result && reporter->on_suite_finish)
-                {
-                    reporter->on_suite_finish(current_suite_result);
-                }
-
-                current_suite_name = current_test_info->suite_name;
-                current_suite_result = (_UT_SuiteResult *)calloc(1, sizeof(_UT_SuiteResult));
-                current_suite_result->name = current_suite_name;
-
-                // Add to the flat array for final CI summary
-                if (test_run.total_suites < _UT_MAX_SUITES)
-                {
-                    all_suites_array[test_run.total_suites] = current_suite_result;
-                }
-                test_run.total_suites++;
-
-                if (reporter->on_suite_start)
-                    reporter->on_suite_start(current_suite_result);
+                suite_filter = argv[i] + _UT_ARG_SUITE_FILTER_LEN;
+                break;
             }
+        }
 
-            // Print progress indicator
-            printf("\n%s: ", current_test_info->test_name);
-            fflush(stdout);
+        _UT_TestRun test_run = {0};
+        _UT_SuiteResult *all_suites_array[_UT_MAX_SUITES] = {0};
 
-            struct timespec test_start_time, test_end_time;
-            clock_gettime(CLOCK_MONOTONIC, &test_start_time);
+        const char *executable_path = argv[0];
+        _UT_TestInfo *current_test_info = _UT_registry_head;
+
+        _UT_SuiteResult *current_suite_result = NULL;
+        const char *current_suite_name = "";
+
+        struct timespec run_start_time, run_end_time;
+        clock_gettime(CLOCK_MONOTONIC, &run_start_time);
+
+        if (reporter->on_run_start)
+            reporter->on_run_start(&test_run);
+
+        while (current_test_info)
+        {
+            if (!suite_filter || strcmp(current_test_info->suite_name, suite_filter) == 0)
+            {
+                // If suite has changed, finalize the old one and start a new one
+                if (strcmp(current_suite_name, current_test_info->suite_name) != 0)
+                {
+                    if (current_suite_result && reporter->on_suite_finish)
+                    {
+                        reporter->on_suite_finish(current_suite_result);
+                    }
+
+                    current_suite_name = current_test_info->suite_name;
+                    current_suite_result = (_UT_SuiteResult *)calloc(1, sizeof(_UT_SuiteResult));
+                    current_suite_result->name = current_suite_name;
+
+                    // Add to the flat array for final CI summary
+                    if (test_run.total_suites < _UT_MAX_SUITES)
+                    {
+                        all_suites_array[test_run.total_suites] = current_suite_result;
+                    }
+                    test_run.total_suites++;
+
+                    if (reporter->on_suite_start)
+                        reporter->on_suite_start(current_suite_result);
+                }
+
+                // Print progress indicator
+                printf("\n%s: ", current_test_info->test_name);
+                fflush(stdout);
+
+                struct timespec test_start_time, test_end_time;
+                clock_gettime(CLOCK_MONOTONIC, &test_start_time);
 
 #ifdef _WIN32
-            _UT_TestResult *result = _UT_run_process_win(current_test_info, executable_path);
+                _UT_TestResult *result = _UT_run_process_win(current_test_info, executable_path);
 #else
-            _UT_TestResult *result = _UT_run_process_posix(current_test_info, executable_path);
+                _UT_TestResult *result = _UT_run_process_posix(current_test_info, executable_path);
 #endif
 
-            clock_gettime(CLOCK_MONOTONIC, &test_end_time);
-            result->duration_ms = (test_end_time.tv_sec - test_start_time.tv_sec) * 1000.0 + (test_end_time.tv_nsec - test_start_time.tv_nsec) / 1000000.0;
+                clock_gettime(CLOCK_MONOTONIC, &test_end_time);
+                result->duration_ms = (test_end_time.tv_sec - test_start_time.tv_sec) * 1000.0 + (test_end_time.tv_nsec - test_start_time.tv_nsec) / 1000000.0;
 
-            // Update stats
-            current_suite_result->total_tests++;
-            test_run.total_tests++;
-            if (result->status == _UT_STATUS_PASSED || result->status == _UT_STATUS_DEATH_TEST_PASSED)
-            {
-                current_suite_result->passed_tests++;
-                test_run.passed_tests++;
-                if (current_suite_result->details_idx < _UT_SUITE_RESULTS_DETAILS_SIZE - 1)
+                // Update stats
+                current_suite_result->total_tests++;
+                test_run.total_tests++;
+                if (result->status == _UT_STATUS_PASSED || result->status == _UT_STATUS_DEATH_TEST_PASSED)
                 {
-                    current_suite_result->details[current_suite_result->details_idx++] = '+';
+                    current_suite_result->passed_tests++;
+                    test_run.passed_tests++;
+                    if (current_suite_result->details_idx < _UT_SUITE_RESULTS_DETAILS_SIZE - 1)
+                    {
+                        current_suite_result->details[current_suite_result->details_idx++] = '+';
+                    }
                 }
-            }
-            else
-            {
-                if (current_suite_result->details_idx < _UT_SUITE_RESULTS_DETAILS_SIZE - 1)
+                else
                 {
-                    current_suite_result->details[current_suite_result->details_idx++] = '-';
+                    if (current_suite_result->details_idx < _UT_SUITE_RESULTS_DETAILS_SIZE - 1)
+                    {
+                        current_suite_result->details[current_suite_result->details_idx++] = '-';
+                    }
                 }
-            }
 
-            // Report and free immediately
-            if (reporter->on_test_finish)
-                reporter->on_test_finish(result);
-            _UT_free_test_result(result);
+                // Report and free immediately
+                if (reporter->on_test_finish)
+                    reporter->on_test_finish(result);
+                _UT_free_test_result(result);
+            }
+            current_test_info = current_test_info->next;
         }
-        current_test_info = current_test_info->next;
+
+        // Finalize the very last suite
+        if (current_suite_result && reporter->on_suite_finish)
+        {
+            reporter->on_suite_finish(current_suite_result);
+        }
+
+        clock_gettime(CLOCK_MONOTONIC, &run_end_time);
+        test_run.total_duration_ms = (run_end_time.tv_sec - run_start_time.tv_sec) * 1000.0 + (run_end_time.tv_nsec - run_start_time.tv_nsec) / 1000000.0;
+
+        // Final overall summary
+        if (reporter->on_run_finish)
+            reporter->on_run_finish(&test_run, all_suites_array, test_run.total_suites);
+
+        // Cleanup
+        for (int i = 0; i < test_run.total_suites; ++i)
+        {
+            free(all_suites_array[i]);
+        }
+
+        return (test_run.total_tests - test_run.passed_tests) > 0 ? 1 : 0;
     }
-
-    // Finalize the very last suite
-    if (current_suite_result && reporter->on_suite_finish)
-    {
-        reporter->on_suite_finish(current_suite_result);
-    }
-
-    clock_gettime(CLOCK_MONOTONIC, &run_end_time);
-    test_run.total_duration_ms = (run_end_time.tv_sec - run_start_time.tv_sec) * 1000.0 + (run_end_time.tv_nsec - run_start_time.tv_nsec) / 1000000.0;
-
-    // Final overall summary
-    if (reporter->on_run_finish)
-        reporter->on_run_finish(&test_run, all_suites_array, test_run.total_suites);
-
-    // Cleanup
-    for (int i = 0; i < test_run.total_suites; ++i)
-    {
-        free(all_suites_array[i]);
-    }
-
-    return (test_run.total_tests - test_run.passed_tests) > 0 ? 1 : 0;
 }
 
 #ifdef UT_MEMORY_TRACKING_ENABLED
@@ -2063,6 +2117,10 @@ void UT_mark_memory_as_baseline(void)
 #endif
 
 #ifdef _WIN32
+// Static file-scope variables for Windows stdout capture.
+static int _UT_stdout_original_fd = -1;
+static HANDLE _UT_stdout_pipe_read = NULL;
+static HANDLE _UT_stdout_pipe_write = NULL;
 void _UT_start_capture_stdout(void)
 {
     fflush(stdout);
