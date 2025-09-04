@@ -13,7 +13,6 @@
 #undef RUN_DEMO
 
 
-
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"

@@ -1,7 +1,8 @@
 // Pepe Gallardo, Data Structures, University of Malaga
 
-#include "CircularLinkedList.h"
 #include <stdio.h>
+
+#include "CircularLinkedList.h"
 
 int runDemo(void) {
   struct CircularLinkedList* p_list1 = CircularLinkedList_new();

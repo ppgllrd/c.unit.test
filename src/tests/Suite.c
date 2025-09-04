@@ -3,11 +3,12 @@
 /* Pepe Gallardo, 2025                                                        */
 /*============================================================================*/
 
+#include "CircularLinkedList.h"
+#include "Helpers.h"
+
 #define UNIT_TEST_DECLARATION
 #define UNIT_TEST_IMPLEMENTATION
 #include "test/unit/UnitTest.h"
-#include "CircularLinkedList.h"
-#include "Helpers.h"
 
 /*============================================================================*/
 /* TEST HELPERS                                                               */
