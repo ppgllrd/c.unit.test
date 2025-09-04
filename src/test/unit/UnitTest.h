@@ -603,6 +603,28 @@ void _UT_record_failure(const char *file, int line, const char *cond_str, const 
     } while (0)
 
 /**
+ * @brief Asserts that two pointer values are different.
+ *
+ * If the pointers are equal, the test fails and records both pointer addresses.
+ *
+ * @param expected The expected pointer value.
+ * @param actual The actual pointer value to check.
+ */
+#define NON_EQUAL_POINTER(expected, actual)                                                     \
+    do                                                                                      \
+    {                                                                                       \
+        const void *e = (const void *)(expected);                                           \
+        const void *a = (const void *)(actual);                                             \
+        if (e == a)                                                                         \
+        {                                                                                   \
+            char e_buf[32], a_buf[32];                                                      \
+            snprintf(e_buf, 32, "%p", e);                                                   \
+            snprintf(a_buf, 32, "%p", a);                                                   \
+            _UT_record_failure(__FILE__, __LINE__, #expected " != " #actual, e_buf, a_buf); \
+        }                                                                                   \
+    } while (0)
+
+/**
  * @brief Asserts that a pointer value is NULL.
  * @param actual The actual pointer value to check.
  */
