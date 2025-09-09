@@ -2143,6 +2143,7 @@ void UT_mark_memory_as_baseline(void)
 static int _UT_stdout_original_fd = -1;
 static HANDLE _UT_stdout_pipe_read = NULL;
 static HANDLE _UT_stdout_pipe_write = NULL;
+
 void _UT_start_capture_stdout(void)
 {
     fflush(stdout);
@@ -2151,31 +2152,25 @@ void _UT_start_capture_stdout(void)
     _UT_stdout_original_fd = _dup(_fileno(stdout));
 
     SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), NULL, TRUE};
-    if (!CreatePipe(&_UT_stdout_pipe_read, &_UT_stdout_pipe_write, &sa, 0))
-    {
+    if (!CreatePipe(&_UT_stdout_pipe_read, &_UT_stdout_pipe_write, &sa, 0)) {
         return; // Pipe creation failed
     }
 
     // 2. Create a new C-level file descriptor from the pipe's write handle.
-    //    IMPORTANT: Use _O_BINARY to prevent Windows from changing '\n' to '\r\n'.
     int pipe_write_fd = _open_osfhandle((intptr_t)_UT_stdout_pipe_write, _O_WRONLY | _O_BINARY);
-    if (pipe_write_fd == -1)
-    {
-        // Cleanup on failure
+    if (pipe_write_fd == -1) {
         CloseHandle(_UT_stdout_pipe_read);
         CloseHandle(_UT_stdout_pipe_write);
         return;
     }
 
-    // 3. Redirect stdout to the new pipe. This is the key step.
+    // 3. Redirect stdout to the new pipe.
     _dup2(pipe_write_fd, _fileno(stdout));
 
-    // 4. The handle returned by _open_osfhandle is now redundant because _dup2
-    //    made a copy, so we must close it.
+    // 4. The handle returned by _open_osfhandle is now redundant, so we must close it.
     _close(pipe_write_fd);
 
-    // 5. Force the newly redirected stdout to be unbuffered. This prevents
-    //    output (especially the final newline) from getting stuck in a buffer.
+    // 5. Force the newly redirected stdout to be unbuffered.
     setvbuf(stdout, NULL, _IONBF, 0);
 }
 
@@ -2183,37 +2178,32 @@ void _UT_stop_capture_stdout(char *buffer, size_t size)
 {
     fflush(stdout);
 
-    // 1. Restore the original stdout file descriptor. This automatically closes
-    //    the C runtime's connection to our pipe's write handle, signaling EOF
-    //    to the reading end.
-    if (_UT_stdout_original_fd != -1)
-    {
+    // 1. **CRITICAL FIX:** Close the OS HANDLE for the write-end of the pipe.
+    // The C runtime still has its descriptor open, but this is the first step
+    // to signaling that no more data is coming.
+    if (_UT_stdout_pipe_write) {
+        CloseHandle(_UT_stdout_pipe_write);
+        _UT_stdout_pipe_write = NULL;
+    }
+
+    // 2. Restore the original stdout file descriptor. This tells the C runtime
+    // to stop using the (now-closing) pipe.
+    if (_UT_stdout_original_fd != -1) {
         _dup2(_UT_stdout_original_fd, _fileno(stdout));
         _close(_UT_stdout_original_fd);
         _UT_stdout_original_fd = -1;
     }
 
-    // 2. Read all output from the pipe. This is now a safe blocking read
-    //    because the write end is guaranteed to be closed.
+    // 3. Now that the writer is guaranteed to be gone, read all output. This will no longer block.
     DWORD bytes_read = 0;
-    if (_UT_stdout_pipe_read != NULL)
-    {
+    if (_UT_stdout_pipe_read != NULL) {
         ReadFile(_UT_stdout_pipe_read, buffer, (DWORD)size - 1, &bytes_read, NULL);
         buffer[bytes_read] = '\0';
-    }
-    else
-    {
+        CloseHandle(_UT_stdout_pipe_read);
+        _UT_stdout_pipe_read = NULL;
+    } else {
         buffer[0] = '\0';
     }
-
-    // 3. Clean up the WinAPI pipe handles.
-    if (_UT_stdout_pipe_read)
-        CloseHandle(_UT_stdout_pipe_read);
-    if (_UT_stdout_pipe_write)
-        CloseHandle(_UT_stdout_pipe_write);
-
-    _UT_stdout_pipe_read = NULL;
-    _UT_stdout_pipe_write = NULL;
 }
 #else
 static int _UT_stdout_pipe[2] = {-1, -1}, _UT_stdout_original_fd = -1;
