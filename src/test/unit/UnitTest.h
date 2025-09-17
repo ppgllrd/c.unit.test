@@ -596,8 +596,14 @@ void _UT_record_failure(const char *file, int line, const char *cond_str, const 
         if (e != a)                                                                         \
         {                                                                                   \
             char e_buf[32], a_buf[32];                                                      \
-            snprintf(e_buf, 32, "%p", e);                                                   \
-            snprintf(a_buf, 32, "%p", a);                                                   \
+            if (e == NULL)                                                                  \
+                snprintf(e_buf, 32, "NULL");                                                \
+            else                                                                            \
+                snprintf(e_buf, 32, "%p", e);                                               \
+            if (a == NULL)                                                                  \
+                snprintf(a_buf, 32, "NULL");                                                \
+            else                                                                            \
+                snprintf(a_buf, 32, "%p", a);                                               \
             _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e_buf, a_buf); \
         }                                                                                   \
     } while (0)
@@ -618,8 +624,14 @@ void _UT_record_failure(const char *file, int line, const char *cond_str, const 
         if (e == a)                                                                         \
         {                                                                                   \
             char e_buf[32], a_buf[32];                                                      \
-            snprintf(e_buf, 32, "%p", e);                                                   \
-            snprintf(a_buf, 32, "%p", a);                                                   \
+            if (e == NULL)                                                                  \
+                snprintf(e_buf, 32, "NULL");                                                \
+            else                                                                            \
+                snprintf(e_buf, 32, "%p", e);                                               \
+            if (a == NULL)                                                                  \
+                snprintf(a_buf, 32, "NULL");                                                \
+            else                                                                            \
+                snprintf(a_buf, 32, "%p", a);                                               \
             _UT_record_failure(__FILE__, __LINE__, #expected " != " #actual, e_buf, a_buf); \
         }                                                                                   \
     } while (0)
@@ -659,7 +671,7 @@ void _UT_record_failure(const char *file, int line, const char *cond_str, const 
         const char *a = (actual);                                                                             \
         if (!e || !a || strcmp(e, a) != 0)                                                                    \
         {                                                                                                     \
-            _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e ? e : "NULL", a ? a : "NULL"); \
+            _UT_record_failure(__FILE__, __LINE__, "strcmp(" #expected ", " #actual ") == 0", e ? e : "NULL", a ? a : "NULL"); \
         }                                                                                                     \
     } while (0)
 
@@ -1459,13 +1471,23 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
     CloseHandle(pi.hThread);
     CloseHandle(h_read);
 
-    const _UT_DeathExpect *de = test->death_expect;
+const _UT_DeathExpect *de = test->death_expect;
     if (de)
     {
-        int exit_ok = 1, msg_ok = 1;
+        int termination_ok = 0; // Default to FAILED.
+        int msg_ok = 1;
 
-        if (de->expected_exit_code != -1 && exit_code != (DWORD)de->expected_exit_code)
-            exit_ok = 0;
+        // On Windows, death tests primarily check for an expected non-zero exit code.
+        if (de->expected_exit_code != -1)
+        {
+            if (exit_code == (DWORD)de->expected_exit_code)
+            {
+                termination_ok = 1; // It exited with the exact code we wanted. PASS.
+            }
+            // else: it exited with the wrong code (or 0). FAIL.
+        }
+        // Note: A death test on Windows should always expect an exit code.
+        // If not, termination_ok remains 0.
 
         if (de->expected_assert_msg)
         {
@@ -1475,7 +1497,6 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
                 msg_ok = 0;
                 free(result->captured_output);
                 char failure_reason[1024];
-                // Safely format the failure message to prevent truncation warnings
                 const int max_len = sizeof(failure_reason) - (de->expected_assert_msg ? strlen(de->expected_assert_msg) : 0) - 150;
                 snprintf(failure_reason, sizeof(failure_reason), "Death test failed: Could not extract custom assertion message.\nExpected message: \"%s\"\nGot full output:\n---\n%.*s...---", de->expected_assert_msg, max_len > 0 ? max_len : 0, output_buffer);
                 result->captured_output = _UT_strdup(failure_reason);
@@ -1509,7 +1530,7 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
             }
         }
 
-        if (exit_code != 0 && exit_ok && msg_ok)
+        if (termination_ok && msg_ok)
         {
             result->status = _UT_STATUS_DEATH_TEST_PASSED;
         }
@@ -1612,21 +1633,31 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
         const _UT_DeathExpect *de = test->death_expect;
         if (de)
         {
-            int sig_ok = 1, exit_ok = 1, msg_ok = 1;
+            int termination_ok = 0; // Default to FAILED. Must prove it passed.
+            int msg_ok = 1;
 
-            if (WIFSIGNALED(status))
+            // Check if the termination condition matches what was expected.
+            if (de->expected_signal != 0)
             {
-                if (de->expected_signal != 0 && WTERMSIG(status) != de->expected_signal)
-                    sig_ok = 0;
+                // Case 1: We expected a signal.
+                if (WIFSIGNALED(status)) {
+                    if (WTERMSIG(status) == de->expected_signal) {
+                        termination_ok = 1; // It crashed with the exact signal we wanted. PASS.
+                    }
+                    // else: it crashed with the wrong signal. termination_ok remains 0. FAIL.
+                }
+                // else: it did not crash with a signal (e.g., it exited cleanly). termination_ok remains 0. FAIL.
             }
-            else if (WIFEXITED(status))
+            else if (de->expected_exit_code != -1)
             {
-                if (de->expected_exit_code != -1 && WEXITSTATUS(status) != de->expected_exit_code)
-                    exit_ok = 0;
-            }
-            else
-            {
-                sig_ok = exit_ok = 0;
+                // Case 2: We expected a specific exit code.
+                if (WIFEXITED(status)) {
+                    if (WEXITSTATUS(status) == de->expected_exit_code) {
+                        termination_ok = 1; // It exited with the exact code we wanted. PASS.
+                    }
+                    // else: it exited with the wrong code. termination_ok remains 0. FAIL.
+                }
+                // else: it did not exit cleanly (e.g., it crashed). termination_ok remains 0. FAIL.
             }
 
             if (de->expected_assert_msg)
@@ -1637,7 +1668,6 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
                     msg_ok = 0;
                     free(result->captured_output);
                     char failure_reason[1024];
-                    // Safely format the failure message to prevent truncation warnings
                     const int max_len = sizeof(failure_reason) - (de->expected_assert_msg ? strlen(de->expected_assert_msg) : 0) - 150;
                     snprintf(failure_reason, sizeof(failure_reason), "Death test failed: Could not extract custom assertion message.\nExpected message: \"%s\"\nGot full output:\n---\n%.*s...---", de->expected_assert_msg, max_len > 0 ? max_len : 0, output_buffer);
                     result->captured_output = _UT_strdup(failure_reason);
@@ -1671,7 +1701,7 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
                 }
             }
 
-            if ((WIFSIGNALED(status) || WIFEXITED(status)) && sig_ok && exit_ok && msg_ok)
+            if (termination_ok && msg_ok)
             {
                 result->status = _UT_STATUS_DEATH_TEST_PASSED;
             }
@@ -1833,7 +1863,14 @@ static void _UT_console_on_test_finish(const _UT_TestResult *test)
         break;
     case _UT_STATUS_CRASHED:
         printf("\n   %sCRASHED%s (%.2f ms)\n", KRED, KNRM, test->duration_ms);
-        fprintf(stderr, "   Test process terminated unexpectedly.\n   Output:\n---\n%s\n---\n", test->captured_output ? test->captured_output : " (none)");
+        if (test->captured_output && strlen(test->captured_output) > 0)
+        {
+            fprintf(stderr, "   Test process terminated unexpectedly.\n   Output:\n---\n%s\n---\n", test->captured_output);
+        }
+        else
+        {
+            fprintf(stderr, "   Test process terminated unexpectedly.\n");
+        }
         break;
     case _UT_STATUS_TIMEOUT:
         printf("\n   %sTIMEOUT%s (%.2f ms)\n", KRED, KNRM, test->duration_ms);
@@ -1930,7 +1967,7 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char *argv[])
 {
     // Primero, comprobamos si el proceso fue invocado con la intención de ser un "hijo".
     // La presencia del flag "--run_test" es el indicador clave.
-    bool is_child_process_invocation = (argc > 1 && strcmp(argv[1], _UT_ARG_RUN_TEST) == 0);
+    bool is_child_process_invocation = ((argc > 1) && (strcmp(argv[1], _UT_ARG_RUN_TEST) == 0));
 
     if (is_child_process_invocation)
     {
