@@ -1870,7 +1870,7 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
             if (result->failures == NULL &&
                 result->status == _UT_STATUS_FAILED &&
                 test->death_expect &&
-                test->death_expect->expected_exit_code == _UT_ASSERT_EXIT_CODE)
+                test->death_expect->expected_signal == SIGABRT)
             {
 
                 _UT_AssertionFailure *f = (_UT_AssertionFailure *)calloc(1, sizeof(_UT_AssertionFailure));
