@@ -1253,6 +1253,34 @@ int _UT_compare_string(const char *a, const char *b);
             current = current->next;                                                                                                   \
         }                                                                                                                              \
     } while (0)
+
+/**
+ * @brief (Memory Tracking) Silently asserts memory changes and marks new allocations as baseline, including byte counts.
+ * 
+ * This macro functions like ASSERT_AND_MARK_MEMORY_CHANGES_BYTES but suppresses any stdout output
+ * produced by the code block being tested. It captures and discards stdout during the execution
+ * of the code block, ensuring that only memory tracking assertions are performed without any
+ * interference from printed output.
+ * @param code_block The block of code to execute and monitor.
+ * @param expected_allocs The exact number of new allocations expected within the block.
+ * @param expected_frees The exact number of frees expected within the block.
+ * @param expected_bytes_allocd The total number of bytes expected to be allocated.
+ * @param expected_bytes_freed The total number of bytes expected to be freed.
+ */
+ #define SILENT_ASSERT_AND_MARK_MEMORY_CHANGES_BYTES(code_block, expected_allocs, expected_frees, expected_bytes_allocd, expected_bytes_freed) \
+    do                                                                                                                                              \
+    {                                                                                                                                               \
+        char _silent_capture_buffer_[_STDOUT_CAPTURE_BUFFER_SIZE];                                                                                  \
+                                                                                                                                                    \
+        ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({                                                                                                      \
+            _UT_start_capture_stdout();                                                                                                             \
+            {                                                                                                                                       \
+                code_block;                                                                                                   \
+            }                                                                                                                                       \
+            _UT_stop_capture_stdout(_silent_capture_buffer_, sizeof(_silent_capture_buffer_));                                                      \
+        }, (expected_allocs), (expected_frees), (expected_bytes_allocd), (expected_bytes_freed));                                                   \
+                                                                                                                                                    \
+    } while (0)    
 #endif // UT_MEMORY_TRACKING_ENABLED
 
 #endif // UNIT_TEST_DECLARATION
@@ -2366,7 +2394,7 @@ void _UT_stop_capture_stdout(char *buffer, size_t size)
     ssize_t bytes_read = 0, total_bytes = 0;
     int flags = fcntl(_UT_stdout_pipe[0], F_GETFL, 0);
     fcntl(_UT_stdout_pipe[0], F_SETFL, flags | O_NONBLOCK);
-    while (total_bytes < size - 1 && (bytes_read = read(_UT_stdout_pipe[0], buffer + total_bytes, size - 1 - total_bytes)) > 0)
+    while (total_bytes < (ssize_t)size - 1 && (bytes_read = read(_UT_stdout_pipe[0], buffer + total_bytes, size - 1 - total_bytes)) > 0)
     {
         total_bytes += bytes_read;
     }
