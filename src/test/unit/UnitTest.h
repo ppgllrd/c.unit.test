@@ -1065,7 +1065,7 @@ int _UT_compare_string(const char *a, const char *b);
         float e = (expected);                                                                             \
         float a = (actual);                                                                               \
         float t = (tolerance);                                                                            \
-        if (fabsf(e - a) > t)                                                                             \
+        if ((isnan(e) != isnan(a)) || (!isnan(a) && fabsf(e - a) > t))                                    \
         {                                                                                                 \
             char e_buf[128], a_buf[128], cond_str[256];                                                   \
             snprintf(e_buf, sizeof(e_buf), "%f", e);                                                      \
@@ -1087,7 +1087,7 @@ int _UT_compare_string(const char *a, const char *b);
         double e = (expected);                                                                           \
         double a = (actual);                                                                             \
         double t = (tolerance);                                                                          \
-        if (fabs(e - a) > t)                                                                             \
+        if ((isnan(e) != isnan(a)) || (!isnan(a) && fabs(e - a) > t))                                     \
         {                                                                                                \
             char e_buf[128], a_buf[128], cond_str[256];                                                  \
             snprintf(e_buf, sizeof(e_buf), "%lf", e);                                                    \
