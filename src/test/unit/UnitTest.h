@@ -1696,7 +1696,25 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
                 termination_ok = 1;
         }
         if (de->expected_assert_msg)
-        { /* message extraction logic */
+        {
+            char *extracted_msg = _UT_extract_assert_message(output_buffer);
+            if (extracted_msg)
+            {
+                if (de->is_exact_assert_check)
+                {
+                    msg_ok = (strcmp(extracted_msg, de->expected_assert_msg) == 0);
+                }
+                else
+                {
+                    float similarity = _UT_calculate_similarity_ratio(extracted_msg, de->expected_assert_msg);
+                    msg_ok = (similarity >= de->min_similarity);
+                }
+                free(extracted_msg);
+            }
+            else
+            {
+                msg_ok = 0; // Could not extract message
+            }
         }
         if (termination_ok && msg_ok)
             result->status = _UT_STATUS_DEATH_TEST_PASSED;
@@ -1860,6 +1878,27 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
             {
                 if (WEXITSTATUS(status) == de->expected_exit_code)
                     termination_ok = 1;
+            }
+            if (de->expected_assert_msg)
+            {
+                char *extracted_msg = _UT_extract_assert_message(output_buffer);
+                if (extracted_msg)
+                {
+                    if (de->is_exact_assert_check)
+                    {
+                        msg_ok = (strcmp(extracted_msg, de->expected_assert_msg) == 0);
+                    }
+                    else
+                    {
+                        float similarity = _UT_calculate_similarity_ratio(extracted_msg, de->expected_assert_msg);
+                        msg_ok = (similarity >= de->min_similarity);
+                    }
+                    free(extracted_msg);
+                }
+                else
+                {
+                    msg_ok = 0; // Could not extract message
+                }
             }
             if (termination_ok && msg_ok)
                 result->status = _UT_STATUS_DEATH_TEST_PASSED;
