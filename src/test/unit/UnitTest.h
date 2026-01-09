@@ -1734,7 +1734,7 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
             {
                 f->file = _UT_strdup(test->suite_name);
                 f->line = 0;
-                if (termination_ok && !msg_ok)
+                if (termination_ok && !msg_ok && de->expected_assert_msg)
                 {
                     // Assertion occurred but with wrong message
                     f->condition_str = _UT_strdup("Assertion occurred but message did not match");
@@ -1751,6 +1751,8 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
                     char *extracted = _UT_extract_assert_message(output_buffer);
                     if (extracted)
                     {
+                        // Note: extracted is already malloc'd by _UT_extract_assert_message
+                        // and will be freed when the failure is freed
                         f->actual_str = extracted;
                     }
                     else
@@ -1926,7 +1928,7 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
                 {
                     f->file = _UT_strdup(test->suite_name);
                     f->line = 0;
-                    if (termination_ok && !msg_ok)
+                    if (termination_ok && !msg_ok && de->expected_assert_msg)
                     {
                         // Assertion occurred but with wrong message
                         f->condition_str = _UT_strdup("Assertion occurred but message did not match");
@@ -1943,6 +1945,8 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
                         char *extracted = _UT_extract_assert_message(output_buffer);
                         if (extracted)
                         {
+                            // Note: extracted is already malloc'd by _UT_extract_assert_message
+                            // and will be freed when the failure is freed
                             f->actual_str = extracted;
                         }
                         else
