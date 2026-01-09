@@ -981,16 +981,14 @@ int _UT_compare_string(const char *a, const char *b);
  */
 #define ASSERT_FREE_COUNT(expected) EQUAL_INT(expected, UT_free_count)
 
-#ifdef UT_MEMORY_TRACKING_ENABLED
 /**
  * @brief (Memory Tracking) Asserts that there are no memory leaks at this point.
  */
-#define ASSERT_NO_LEAKS()     \
-    do                        \
-    {                         \
-        UT_check_for_leaks(); \
+#define ASSERT_NO_LEAKS()      \
+    do                         \
+    {                          \
+        _UT_check_for_leaks(); \
     } while (0)
-#endif
 
 #endif
 
@@ -1447,6 +1445,29 @@ static char *_UT_extract_assert_message(const char *full_output)
     return NULL;
 }
 
+static int _UT_validate_assert_message(const char *output_buffer, const _UT_DeathExpect *de)
+{
+    if (!de->expected_assert_msg)
+        return 1; // No message validation required
+    
+    char *extracted_msg = _UT_extract_assert_message(output_buffer);
+    if (!extracted_msg)
+        return 0; // Could not extract message
+    
+    int msg_ok;
+    if (de->is_exact_assert_check)
+    {
+        msg_ok = (strcmp(extracted_msg, de->expected_assert_msg) == 0);
+    }
+    else
+    {
+        float similarity = _UT_calculate_similarity_ratio(extracted_msg, de->expected_assert_msg);
+        msg_ok = (similarity >= de->min_similarity);
+    }
+    free(extracted_msg);
+    return msg_ok;
+}
+
 static void _UT_serialize_string_escaped(FILE *stream, const char *str)
 {
     if (str == NULL)
@@ -1697,9 +1718,7 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
             if (exit_code == (DWORD)de->expected_exit_code)
                 termination_ok = 1;
         }
-        if (de->expected_assert_msg)
-        { /* message extraction logic */
-        }
+        msg_ok = _UT_validate_assert_message(output_buffer, de);
         if (termination_ok && msg_ok)
             result->status = _UT_STATUS_DEATH_TEST_PASSED;
         else
@@ -1863,6 +1882,7 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
                 if (WEXITSTATUS(status) == de->expected_exit_code)
                     termination_ok = 1;
             }
+            msg_ok = _UT_validate_assert_message(output_buffer, de);
             if (termination_ok && msg_ok)
                 result->status = _UT_STATUS_DEATH_TEST_PASSED;
             else

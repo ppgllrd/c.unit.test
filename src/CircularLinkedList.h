@@ -21,6 +21,6 @@ void CircularLinkedList_insert(struct CircularLinkedList* p_list, int element);
 void CircularLinkedList_remove(struct CircularLinkedList* p_list, size_t index);
 void CircularLinkedList_print(const struct CircularLinkedList* p_list);
 void CircularLinkedList_free(struct CircularLinkedList** p_p_list);
-bool CircularLinkedList_equals(struct CircularLinkedList* p_list1, struct CircularLinkedList* p_list2);
+bool CircularLinkedList_equals(const struct CircularLinkedList* p_list1, const struct CircularLinkedList* p_list2);
 
 #endif

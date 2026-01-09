@@ -34,7 +34,7 @@ void CircularLinkedList_insert(struct CircularLinkedList* p_list, int element) {
   p_node->element = element;
 
   if (p_list->size == 0) {
-   // The list is empty
+    // The list is empty
     p_list->p_last = p_node;
     p_node->p_next = p_node;
   } else {
@@ -109,7 +109,7 @@ void CircularLinkedList_print(const struct CircularLinkedList* p_list) {
         p_current = p_current->p_next;
     }
   }
-   printf("\n");
+  printf("\n");
 }
 //// END (D)
 
@@ -132,14 +132,14 @@ void CircularLinkedList_free(struct CircularLinkedList** p_p_list) {
   // Free the list structure 
   free(p_list);
 
-   // Set the pointer to the list to NULL
+  // Set the pointer to the list to NULL
   *p_p_list = NULL;
 }
 //// END (E)
 
 
 //// BEGIN (F)
-bool CircularLinkedList_equals(struct CircularLinkedList* p_list1, struct CircularLinkedList* p_list2) {
+bool CircularLinkedList_equals(const struct CircularLinkedList* p_list1, const struct CircularLinkedList* p_list2) {
   assert(p_list1 != NULL && "List 1 is NULL");
   assert(p_list2 != NULL && "List 2 is NULL"); 
   
@@ -151,8 +151,8 @@ bool CircularLinkedList_equals(struct CircularLinkedList* p_list1, struct Circul
     return true;
   }
 
-  struct Node* p_current1 = p_list1->p_last->p_next;
-  struct Node* p_current2 = p_list2->p_last->p_next;
+  const struct Node* p_current1 = p_list1->p_last->p_next;
+  const struct Node* p_current2 = p_list2->p_last->p_next;
 
   for (size_t i = 0; i < p_list1->size; i++) {
     if (p_current1->element != p_current2->element) {
