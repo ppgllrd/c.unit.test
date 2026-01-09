@@ -1734,9 +1734,37 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
             {
                 f->file = _UT_strdup(test->suite_name);
                 f->line = 0;
-                f->condition_str = _UT_strdup("Expected assertion failure did not occur");
-                f->expected_str = _UT_strdup("Function should have triggered an assertion");
-                f->actual_str = _UT_strdup("Function returned normally without asserting");
+                if (termination_ok && !msg_ok)
+                {
+                    // Assertion occurred but with wrong message
+                    f->condition_str = _UT_strdup("Assertion occurred but message did not match");
+                    if (de->is_exact_assert_check)
+                    {
+                        f->expected_str = _UT_strdup(de->expected_assert_msg);
+                    }
+                    else
+                    {
+                        char exp_buf[256];
+                        snprintf(exp_buf, sizeof(exp_buf), "Message similar to \"%s\"", de->expected_assert_msg);
+                        f->expected_str = _UT_strdup(exp_buf);
+                    }
+                    char *extracted = _UT_extract_assert_message(output_buffer);
+                    if (extracted)
+                    {
+                        f->actual_str = extracted;
+                    }
+                    else
+                    {
+                        f->actual_str = _UT_strdup("Could not extract assertion message");
+                    }
+                }
+                else
+                {
+                    // Assertion did not occur at all
+                    f->condition_str = _UT_strdup("Expected assertion failure did not occur");
+                    f->expected_str = _UT_strdup("Function should have triggered an assertion");
+                    f->actual_str = _UT_strdup("Function returned normally without asserting");
+                }
                 result->failures = f;
             }
         }
@@ -1898,9 +1926,37 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
                 {
                     f->file = _UT_strdup(test->suite_name);
                     f->line = 0;
-                    f->condition_str = _UT_strdup("Expected assertion failure did not occur");
-                    f->expected_str = _UT_strdup("Function should have triggered an assertion");
-                    f->actual_str = _UT_strdup("Function returned normally without asserting");
+                    if (termination_ok && !msg_ok)
+                    {
+                        // Assertion occurred but with wrong message
+                        f->condition_str = _UT_strdup("Assertion occurred but message did not match");
+                        if (de->is_exact_assert_check)
+                        {
+                            f->expected_str = _UT_strdup(de->expected_assert_msg);
+                        }
+                        else
+                        {
+                            char exp_buf[256];
+                            snprintf(exp_buf, sizeof(exp_buf), "Message similar to \"%s\"", de->expected_assert_msg);
+                            f->expected_str = _UT_strdup(exp_buf);
+                        }
+                        char *extracted = _UT_extract_assert_message(output_buffer);
+                        if (extracted)
+                        {
+                            f->actual_str = extracted;
+                        }
+                        else
+                        {
+                            f->actual_str = _UT_strdup("Could not extract assertion message");
+                        }
+                    }
+                    else
+                    {
+                        // Assertion did not occur at all
+                        f->condition_str = _UT_strdup("Expected assertion failure did not occur");
+                        f->expected_str = _UT_strdup("Function should have triggered an assertion");
+                        f->actual_str = _UT_strdup("Function returned normally without asserting");
+                    }
                     result->failures = f;
                 }
             }
