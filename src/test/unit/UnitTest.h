@@ -981,16 +981,14 @@ int _UT_compare_string(const char *a, const char *b);
  */
 #define ASSERT_FREE_COUNT(expected) EQUAL_INT(expected, UT_free_count)
 
-#ifdef UT_MEMORY_TRACKING_ENABLED
 /**
  * @brief (Memory Tracking) Asserts that there are no memory leaks at this point.
  */
-#define ASSERT_NO_LEAKS()     \
-    do                        \
-    {                         \
-        UT_check_for_leaks(); \
+#define ASSERT_NO_LEAKS()      \
+    do                         \
+    {                          \
+        _UT_check_for_leaks(); \
     } while (0)
-#endif
 
 #endif
 
