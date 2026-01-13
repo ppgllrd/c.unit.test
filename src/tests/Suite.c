@@ -22,12 +22,17 @@ static bool _equalLists(const struct CircularLinkedList* l1, const struct Circul
     return _c((struct Y*)l1, (struct Y*)l2);
 }
 
-
 static void __p(char* buf, size_t size, struct CircularLinkedList* list) {
     _p(buf, size, (struct Y*)list);
 }
 
+static bool _validateList(struct CircularLinkedList* list, char* buf, size_t size) {
+    return _v((struct Y*)list, buf, size);
+}
+
 #define EQUAL_CIRCULAR_LINKED_LIST(expected, actual) EQUAL_BY(expected, actual, _equalLists, __p)
+
+#define VALIDATE_CIRCULAR_LINKED_LIST(list) ASSERT_VALID(list, _validateList, __p)
 
 /*============================================================================*/
 /* TEST SUITE A: CircularLinkedList_new                                       */
@@ -36,6 +41,7 @@ TEST_CASE(CircularLinkedList_new, "Creates a non-NULL list structure") {
     // result is non NULL, and p_last is NULL and size is 0
     UT_disable_leak_check();
     struct CircularLinkedList* list = CircularLinkedList_new();
+    VALIDATE_CIRCULAR_LINKED_LIST(list);
     REFUTE_NULL(list);
     ASSERT_NULL(list->p_last);
     EQUAL_INT(0, list->size);
@@ -67,6 +73,7 @@ TEST_CASE(CircularLinkedList_insert, "Inserts into an empty list") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_insert(list, 10);
     }, 1, 0, sizeof(struct Node), 0);
+    VALIDATE_CIRCULAR_LINKED_LIST(list);
     EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_insert, "Inserts smaller element at the beginning") {
@@ -77,6 +84,7 @@ TEST_CASE(CircularLinkedList_insert, "Inserts smaller element at the beginning")
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_insert(list, 5);
     }, 1, 0, sizeof(struct Node), 0);
+    VALIDATE_CIRCULAR_LINKED_LIST(list);
     EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_insert, "Inserts larger element at the end") {
@@ -87,7 +95,7 @@ TEST_CASE(CircularLinkedList_insert, "Inserts larger element at the end") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_insert(list, 40);
     }, 1, 0, sizeof(struct Node), 0);
-    EQUAL_CIRCULAR_LINKED_LIST(expected, list);
+    VALIDATE_CIRCULAR_LINKED_LIST(list);
 }
 TEST_CASE(CircularLinkedList_insert, "Inserts an element in the middle") {
     // check that after insertion, the list is correctly updated and one node was allocated
@@ -97,6 +105,7 @@ TEST_CASE(CircularLinkedList_insert, "Inserts an element in the middle") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_insert(list, 30);
     }, 1, 0, sizeof(struct Node), 0);
+    VALIDATE_CIRCULAR_LINKED_LIST(list);
     EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 
@@ -131,6 +140,7 @@ TEST_CASE(CircularLinkedList_remove, "Removes the only element") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_remove(list, 0);
     }, 0, 1, 0, sizeof(struct Node));
+    VALIDATE_CIRCULAR_LINKED_LIST(list);
     EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_remove, "Removes the first element") {
@@ -141,6 +151,7 @@ TEST_CASE(CircularLinkedList_remove, "Removes the first element") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_remove(list, 0);
     }, 0, 1, 0, sizeof(struct Node));
+    VALIDATE_CIRCULAR_LINKED_LIST(list);
     EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_remove, "Removes the last element") {
@@ -151,6 +162,7 @@ TEST_CASE(CircularLinkedList_remove, "Removes the last element") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_remove(list, 2);
     }, 0, 1, 0, sizeof(struct Node));
+    VALIDATE_CIRCULAR_LINKED_LIST(list);
     EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 TEST_CASE(CircularLinkedList_remove, "Removes an element from the middle") {
@@ -161,6 +173,7 @@ TEST_CASE(CircularLinkedList_remove, "Removes an element from the middle") {
     ASSERT_AND_MARK_MEMORY_CHANGES_BYTES({
         CircularLinkedList_remove(list, 1);
     }, 0, 1, 0, sizeof(struct Node));
+    VALIDATE_CIRCULAR_LINKED_LIST(list);
     EQUAL_CIRCULAR_LINKED_LIST(expected, list);
 }
 
