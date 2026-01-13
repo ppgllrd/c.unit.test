@@ -968,6 +968,39 @@ int _UT_compare_string(const char *a, const char *b);
  */
 #define PROPERTY_STRING(value, predicate_fn, help_text) PROPERTY(value, predicate_fn, _UT_print_string, help_text)
 
+/**
+ * @brief Validates properties of an object, producing error messages on failure.
+ * 
+ * @param value The object to validate.
+ * @param validator_fn Function with signature: int (*)(Type val, char* buf, size_t size).
+ *                     Should return 0 if validation fails and write the error to buf.
+ * @param print_fn Function to print the object (for visual context).
+ */
+#define ASSERT_VALID(value, validator_fn, print_fn)                        \
+    do                                                                     \
+    {                                                                      \
+        __typeof__(value) _val = (value);                                  \
+        char _err_msg[1024] = {0};                                         \
+        /* Call the validator passing the error buffer */                  \
+        if (!validator_fn(_val, _err_msg, sizeof(_err_msg)))               \
+        {                                                                  \
+            char _obj_str[1024] = {0};                                     \
+            char _full_actual[2048] = {0};                                 \
+            /* Render the object to see its current state */               \
+            print_fn(_obj_str, sizeof(_obj_str), _val);                    \
+            /* Format the "Actual" message by combining error and object state */\
+            if (_err_msg[0] == '\0') {                                     \
+                 snprintf(_err_msg, sizeof(_err_msg), "Unknown error");    \
+            }                                                              \
+            snprintf(_full_actual, sizeof(_full_actual),                   \
+                     "Invalid: %s. State: %s", _err_msg, _obj_str);        \
+            _UT_record_failure(__FILE__, __LINE__,                         \
+                               #validator_fn "(" #value ")",               \
+                               "Valid structure",                          \
+                               _full_actual);                              \
+        }                                                                  \
+    } while (0)
+
 #ifdef UT_MEMORY_TRACKING_ENABLED
 /**
  * @brief (Memory Tracking) Asserts that the total number of malloc/calloc/realloc calls matches the expected count.
