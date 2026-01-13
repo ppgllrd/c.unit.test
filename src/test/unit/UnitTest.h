@@ -993,7 +993,7 @@ int _UT_compare_string(const char *a, const char *b);
                  snprintf(_err_msg, sizeof(_err_msg), "Unknown error");    \
             }                                                              \
             snprintf(_full_actual, sizeof(_full_actual),                   \
-                     "Invalid: %s. State: %s", _err_msg, _obj_str);        \
+                     "Invalid: %.1000s. State: %.1000s", _err_msg, _obj_str);        \
             _UT_record_failure(__FILE__, __LINE__,                         \
                                #validator_fn "(" #value ")",               \
                                "Valid structure",                          \
