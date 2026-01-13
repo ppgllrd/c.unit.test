@@ -2682,6 +2682,11 @@ void *_UT_malloc(size_t size, const char *file, int line)
         _UT_MemInfo *info = (_UT_MemInfo *)malloc(sizeof(_UT_MemInfo));
         if (info)
         {
+            // fill with random data to help catch uninitialized memory usage
+            for (size_t i = 0; i < size; i++)
+            {
+                ((unsigned char *)ptr)[i] = (unsigned char)(rand() % 256);
+            }
             info->address = ptr;
             info->size = size;
             info->file = file;
@@ -2743,6 +2748,11 @@ void *_UT_realloc(void *old_ptr, size_t new_size, const char *file, int line)
     void *new_ptr = realloc(old_ptr, new_size);
     if (new_ptr != NULL)
     {
+        // fill with random data new bytes to help catch uninitialized memory usage
+        for (size_t i = old_size; i < new_size; i++)
+        {
+            ((unsigned char *)new_ptr)[i] = (unsigned char)(rand() % 256);
+        }
         if (new_size > old_size)
             UT_total_bytes_allocated += (new_size - old_size);
         else
