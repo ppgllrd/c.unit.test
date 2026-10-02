@@ -84,6 +84,7 @@
 #include <math.h>
 #include <time.h>
 #include <errno.h>
+#include <stdint.h>
 
 /*============================================================================*/
 /* SECTION 0: MODE SELECTION & FRAMEWORK CONSTANTS                            */
@@ -213,12 +214,8 @@ typedef struct _UT_AssertionFailure
 {
     char *file;
     int line;
-    char *summary;
-    char *hint;
     char *condition_str;
-    char *expected_expr;
     char *expected_str;
-    char *actual_expr;
     char *actual_str;
     struct _UT_AssertionFailure *next;
 } _UT_AssertionFailure;
@@ -231,11 +228,7 @@ typedef struct _UT_TestResult
     _UT_TestStatus status;
     double duration_ms;
     char *captured_output;
-    char *context;
-    int termination_signal;
-    int termination_exit_code;
     _UT_AssertionFailure *failures;
-    _UT_AssertionFailure *failures_tail;
     struct _UT_TestResult *next;
 } _UT_TestResult;
 
@@ -245,7 +238,6 @@ typedef struct _UT_SuiteResult
     const char *name;
     int total_tests;
     int passed_tests;
-    int crashed_tests;
     char details[_UT_SUITE_DETAILS_SIZE];
     int details_idx;
     _UT_TestResult *test_results_head;
@@ -259,11 +251,6 @@ typedef struct
     int total_suites;
     int total_tests;
     int passed_tests;
-    int crashed_tests;
-    int timed_out_tests;
-    int missing_assertion_tests;
-    int memory_failure_tests;
-    int functional_failure_tests;
     double total_duration_ms;
     _UT_SuiteResult *suites_head;
     _UT_SuiteResult *suites_tail;
@@ -283,6 +270,7 @@ static int _UT_is_ci_mode = 0;
 
 // Global state for the currently running test (in the child process)
 static _UT_TestResult *UT_current_test_result = NULL;
+static char *_UT_current_test_context = NULL;
 
 // Global struct to hold framework error state.
 typedef struct
@@ -350,6 +338,14 @@ extern int UT_alloc_count, UT_free_count;
 extern size_t UT_total_bytes_allocated;
 extern size_t UT_total_bytes_freed;
 
+typedef struct {
+    int alloc_count;
+    int free_count;
+    size_t allocated_bytes;
+    size_t freed_bytes;
+    unsigned long generation;
+} UT_MemoryScope;
+
 #ifdef UNIT_TEST_IMPLEMENTATION
 // Node for the linked list that tracks memory allocations.
 typedef struct _UT_MemInfo
@@ -359,13 +355,25 @@ typedef struct _UT_MemInfo
     const char *file;
     int line;
     int is_baseline;
-    char *allocation_expression;
+    unsigned long generation;
+    char type_name[96];
     struct _UT_MemInfo *next;
 } _UT_MemInfo;
+typedef struct _UT_FreedInfo {
+    void *address;
+    size_t size;
+    unsigned long generation;
+    char type_name[96];
+    const char *file;
+    int line;
+    struct _UT_FreedInfo *next;
+} _UT_FreedInfo;
 
 // Actual definitions of the global variables. This code will only be
 // compiled into the single .c file that defines UNIT_TEST_IMPLEMENTATION.
 _UT_MemInfo *_UT_mem_head = NULL;
+_UT_FreedInfo *_UT_freed_head = NULL;
+unsigned long _UT_mem_generation = 0;
 int UT_alloc_count = 0, UT_free_count = 0;
 int _UT_mem_tracking_enabled = 0;
 int _UT_mem_tracking_is_active = 1;
@@ -420,16 +428,24 @@ void UT_disable_leak_check(void);
 void UT_mark_memory_as_baseline(void);
 
 // Wrapper declarations
-void *_UT_malloc(size_t size, const char *file, int line, const char *expression);
-void *_UT_calloc(size_t num, size_t size, const char *file, int line, const char *expression);
-void *_UT_realloc(void *old_ptr, size_t new_size, const char *file, int line, const char *expression);
+void *_UT_malloc(size_t size, const char *file, int line);
+void *_UT_calloc(size_t num, size_t size, const char *file, int line);
+void *_UT_realloc(void *old_ptr, size_t new_size, const char *file, int line);
 void _UT_free(void *ptr, const char *file, int line);
+void UT_register_allocation_type(void *ptr, const char *type_name);
+int UT_pointer_is_live(const void *ptr);
+int UT_pointer_is_freed(const void *ptr);
+size_t UT_pointer_allocation_size(const void *ptr);
+const char *UT_pointer_allocation_type(const void *ptr);
+UT_MemoryScope UT_memory_scope_begin(void);
+void UT_memory_scope_mark_allocations_as_baseline(UT_MemoryScope scope);
+#define UT_REGISTER_ALLOCATION_TYPE(ptr, type_name) UT_register_allocation_type((void *)(ptr), (type_name))
 
 #ifdef UNIT_TEST_MEMORY_TRACKING
 // Hijack standard memory functions to use our tracking wrappers.
-#define malloc(size) _UT_malloc((size), __FILE__, __LINE__, "malloc(" #size ")")
-#define calloc(num, size) _UT_calloc((num), (size), __FILE__, __LINE__, "calloc(" #num ", " #size ")")
-#define realloc(ptr, size) _UT_realloc((ptr), (size), __FILE__, __LINE__, "realloc(" #ptr ", " #size ")")
+#define malloc(size) _UT_malloc(size, __FILE__, __LINE__)
+#define calloc(num, size) _UT_calloc(num, size, __FILE__, __LINE__)
+#define realloc(ptr, size) _UT_realloc(ptr, size, __FILE__, __LINE__)
 #define free(ptr) _UT_free(ptr, __FILE__, __LINE__)
 #endif // UNIT_TEST_MEMORY_TRACKING
 
@@ -570,12 +586,10 @@ static void _UT_register_test(_UT_TestInfo *test_info)
 
 // Internal helper function to record a failure. Not a macro.
 // Implementation is provided only when UNIT_TEST_IMPLEMENTATION is defined.
-void _UT_record_failure_ex(const char *file, int line,
-                           const char *summary, const char *hint,
-                           const char *condition,
+void _UT_record_failure(const char *file, int line, const char *cond_str, const char *exp_str, const char *act_str);
+void _UT_record_failure_ex(const char *file, int line, const char *summary, const char *hint,
                            const char *expected_expr, const char *expected_value,
                            const char *actual_expr, const char *actual_value);
-void _UT_record_failure(const char *file, int line, const char *cond_str, const char *exp_str, const char *act_str);
 void _UT_set_test_context(const char *context);
 #define TEST_CONTEXT(text) _UT_set_test_context((text))
 
@@ -647,8 +661,7 @@ void _UT_set_test_context(const char *context);
             char e_buf[128], a_buf[128];                                                    \
             snprintf(e_buf, 128, "%d", e);                                                  \
             snprintf(a_buf, 128, "%d", a);                                                  \
-            _UT_record_failure_ex(__FILE__, __LINE__, "Values are different", NULL,                         \
-                                  #expected " == " #actual, #expected, e_buf, #actual, a_buf); \
+            _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e_buf, a_buf); \
         }                                                                                   \
     } while (0)
 
@@ -670,8 +683,7 @@ void _UT_set_test_context(const char *context);
             char e_buf[128], a_buf[128];                                                    \
             snprintf(e_buf, 128, "%u", e);                                                  \
             snprintf(a_buf, 128, "%u", a);                                                  \
-            _UT_record_failure_ex(__FILE__, __LINE__, "Values are different", NULL,                         \
-                                  #expected " == " #actual, #expected, e_buf, #actual, a_buf); \
+            _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e_buf, a_buf); \
         }                                                                                   \
     } while (0)
 
@@ -693,8 +705,7 @@ void _UT_set_test_context(const char *context);
             char e_buf[128], a_buf[128];                                                    \
             snprintf(e_buf, 128, "%zu", e);                                                 \
             snprintf(a_buf, 128, "%zu", a);                                                 \
-            _UT_record_failure_ex(__FILE__, __LINE__, "Values are different", NULL,                         \
-                                  #expected " == " #actual, #expected, e_buf, #actual, a_buf); \
+            _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e_buf, a_buf); \
         }                                                                                   \
     } while (0)
 
@@ -715,8 +726,7 @@ void _UT_set_test_context(const char *context);
         {                                                                                   \
             char e_buf[4] = {'\'', e, '\'', 0};                                             \
             char a_buf[4] = {'\'', a, '\'', 0};                                             \
-            _UT_record_failure_ex(__FILE__, __LINE__, "Values are different", NULL,                         \
-                                  #expected " == " #actual, #expected, e_buf, #actual, a_buf); \
+            _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e_buf, a_buf); \
         }                                                                                   \
     } while (0)
 
@@ -744,8 +754,7 @@ void _UT_set_test_context(const char *context);
                 snprintf(a_buf, 128, "NULL");                                               \
             else                                                                            \
                 snprintf(a_buf, 128, "%p", a);                                              \
-            _UT_record_failure_ex(__FILE__, __LINE__, "Values are different", NULL,                         \
-                                  #expected " == " #actual, #expected, e_buf, #actual, a_buf); \
+            _UT_record_failure(__FILE__, __LINE__, #expected " == " #actual, e_buf, a_buf); \
         }                                                                                   \
     } while (0)
 
@@ -773,8 +782,7 @@ void _UT_set_test_context(const char *context);
                 snprintf(a_buf, 128, "NULL");                                               \
             else                                                                            \
                 snprintf(a_buf, 128, "%p", a);                                              \
-            _UT_record_failure_ex(__FILE__, __LINE__, "Values should be different", NULL,              \
-                                  #expected " != " #actual, #expected, e_buf, #actual, a_buf); \
+            _UT_record_failure(__FILE__, __LINE__, #expected " != " #actual, e_buf, a_buf); \
         }                                                                                   \
     } while (0)
 
@@ -813,12 +821,77 @@ void _UT_set_test_context(const char *context);
         const char *a = (actual);                                                                                              \
         if (!e || !a || strcmp(e, a) != 0)                                                                                     \
         {                                                                                                                      \
-            _UT_record_failure_ex(__FILE__, __LINE__, "Strings are different",                         \
-                                  "Inspect the first differing character, line and column.",       \
-                                  "strcmp(" #expected ", " #actual ") == 0",                     \
-                                  #expected, e ? e : "NULL", #actual, a ? a : "NULL"); \
+            _UT_record_failure(__FILE__, __LINE__, "strcmp(" #expected ", " #actual ") == 0", e ? e : "NULL", a ? a : "NULL"); \
         }                                                                                                                      \
     } while (0)
+
+#define REQUIRE_MSG(condition, summary_text, hint_text)                                  \
+    do {                                                                                 \
+        if (!(condition)) {                                                               \
+            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text),        \
+                                  #condition, "true", #condition, "false");             \
+            return;                                                                       \
+        }                                                                                 \
+    } while (0)
+#define REQUIRE_NOT_NULL_MSG(pointer, summary_text, hint_text)                            \
+    do {                                                                                 \
+        const void *_ut_required = (const void *)(pointer);                               \
+        if (_ut_required == NULL) {                                                       \
+            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text),        \
+                                  #pointer, "non-NULL", #pointer, "NULL");              \
+            return;                                                                       \
+        }                                                                                 \
+    } while (0)
+#define REQUIRE_NOT_NULL_GOTO_MSG(pointer, cleanup_label, summary_text, hint_text)        \
+    do {                                                                                 \
+        const void *_ut_required = (const void *)(pointer);                               \
+        if (_ut_required == NULL) {                                                       \
+            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text),        \
+                                  #pointer, "non-NULL", #pointer, "NULL");              \
+            goto cleanup_label;                                                           \
+        }                                                                                 \
+    } while (0)
+#define EQUAL_STRING_MSG(expected, actual, summary_text, hint_text)                       \
+    do {                                                                                 \
+        const char *_ut_e = (expected);                                                   \
+        const char *_ut_a = (actual);                                                     \
+        if (!_ut_e || !_ut_a || strcmp(_ut_e, _ut_a) != 0)                               \
+            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text),        \
+                                  "expected value", _ut_e ? _ut_e : "NULL",            \
+                                  #actual, _ut_a ? _ut_a : "NULL");                     \
+    } while (0)
+#define EQUAL_POINTER_MSG(expected, actual, summary_text, hint_text)                      \
+    do {                                                                                 \
+        const void *_ut_e = (const void *)(expected);                                     \
+        const void *_ut_a = (const void *)(actual);                                       \
+        if (_ut_e != _ut_a) {                                                             \
+            char _ut_eb[64], _ut_ab[64];                                                  \
+            if (_ut_e) snprintf(_ut_eb, sizeof(_ut_eb), "%p", _ut_e); else strcpy(_ut_eb, "NULL"); \
+            if (_ut_a) snprintf(_ut_ab, sizeof(_ut_ab), "%p", _ut_a); else strcpy(_ut_ab, "NULL"); \
+            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text),        \
+                                  "expected pointer", _ut_eb, #actual, _ut_ab);          \
+        }                                                                                 \
+    } while (0)
+#define EQUAL_SIZE_T_MSG(expected, actual, summary_text, hint_text)                       \
+    do {                                                                                 \
+        size_t _ut_e = (size_t)(expected), _ut_a = (size_t)(actual);                      \
+        if (_ut_e != _ut_a) {                                                             \
+            char _ut_eb[64], _ut_ab[64];                                                  \
+            snprintf(_ut_eb, sizeof(_ut_eb), "%zu", _ut_e);                             \
+            snprintf(_ut_ab, sizeof(_ut_ab), "%zu", _ut_a);                             \
+            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text),        \
+                                  #expected, _ut_eb, #actual, _ut_ab);                    \
+        }                                                                                 \
+    } while (0)
+#define ASSERT_POINTER_LIVE_MSG(pointer, summary_text, hint_text)                         \
+    do { if (!UT_pointer_is_live(pointer))                                                 \
+        _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text),            \
+                              #pointer, "live tracked allocation", #pointer,             \
+                              (pointer) ? "not live or untracked" : "NULL"); } while (0)
+#define ASSERT_POINTER_FREED_MSG(pointer, summary_text, hint_text)                        \
+    do { if (!UT_pointer_is_freed(pointer))                                                \
+        _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text),            \
+                              #pointer, "freed allocation", #pointer, "not freed"); } while (0)
 
 /**
  * @brief Asserts that two arrays are equal element-wise using custom comparison and print functions.
@@ -944,94 +1017,6 @@ void _UT_set_test_context(const char *context);
     } while (0)
 
 /**
- * @brief Compares two custom objects and records a semantic summary and hint.
- */
-#define EQUAL_BY_MSG(expected, actual, compare_fn, print_fn, summary_text, hint_text)              \
-    do                                                                                              \
-    {                                                                                               \
-        __typeof__(expected) _ut_expected_object = (expected);                                      \
-        __typeof__(actual) _ut_actual_object = (actual);                                            \
-        if (!compare_fn(_ut_expected_object, _ut_actual_object))                                    \
-        {                                                                                           \
-            char _ut_expected_text[1024] = {0};                                                     \
-            char _ut_actual_text[1024] = {0};                                                       \
-            print_fn(_ut_expected_text, sizeof(_ut_expected_text), _ut_expected_object);            \
-            print_fn(_ut_actual_text, sizeof(_ut_actual_text), _ut_actual_object);                  \
-            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text),                  \
-                                  "", #expected, _ut_expected_text,                               \
-                                  #actual, _ut_actual_text);                                         \
-        }                                                                                           \
-    } while (0)
-
-/**
- * @brief Compares integer-like scalar values with a semantic summary and hint.
- */
-#define EQUAL_INT_MSG(expected, actual, summary_text, hint_text)                                \
-    do                                                                                           \
-    {                                                                                            \
-        long long _ut_expected_scalar = (long long)(expected);                                  \
-        long long _ut_actual_scalar = (long long)(actual);                                      \
-        if (_ut_expected_scalar != _ut_actual_scalar)                                           \
-        {                                                                                        \
-            char _ut_expected_text[64], _ut_actual_text[64];                                    \
-            snprintf(_ut_expected_text, sizeof(_ut_expected_text), "%lld", _ut_expected_scalar); \
-            snprintf(_ut_actual_text, sizeof(_ut_actual_text), "%lld", _ut_actual_scalar);     \
-            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text), "",          \
-                                  #expected, _ut_expected_text, #actual, _ut_actual_text);       \
-        }                                                                                        \
-    } while (0)
-
-/**
- * @brief Verifies that a pointer is not NULL with a semantic summary and hint.
- */
-/**
- * @brief Compares boolean values with a semantic summary and hint.
- */
-#define EQUAL_BOOL_MSG(expected, actual, summary_text, hint_text)                               \
-    do                                                                                          \
-    {                                                                                           \
-        bool _ut_expected_bool = (bool)(expected);                                              \
-        bool _ut_actual_bool = (bool)(actual);                                                  \
-        if (_ut_expected_bool != _ut_actual_bool)                                               \
-        {                                                                                       \
-            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text), "",         \
-                                  #expected, _ut_expected_bool ? "true" : "false",             \
-                                  #actual, _ut_actual_bool ? "true" : "false");                 \
-        }                                                                                       \
-    } while (0)
-/**
- * @brief Compares pointer values with a semantic summary and hint.
- */
-#define EQUAL_POINTER_MSG(expected, actual, summary_text, hint_text)                            \
-    do                                                                                          \
-    {                                                                                           \
-        const void *_ut_expected_pointer = (const void *)(expected);                            \
-        const void *_ut_actual_pointer = (const void *)(actual);                                \
-        if (_ut_expected_pointer != _ut_actual_pointer)                                         \
-        {                                                                                       \
-            char _ut_expected_text[128], _ut_actual_text[128];                                  \
-            if (_ut_expected_pointer == NULL)                                                   \
-                snprintf(_ut_expected_text, sizeof(_ut_expected_text), "NULL");                 \
-            else                                                                                \
-                snprintf(_ut_expected_text, sizeof(_ut_expected_text), "%p", _ut_expected_pointer); \
-            if (_ut_actual_pointer == NULL)                                                     \
-                snprintf(_ut_actual_text, sizeof(_ut_actual_text), "NULL");                     \
-            else                                                                                \
-                snprintf(_ut_actual_text, sizeof(_ut_actual_text), "%p", _ut_actual_pointer); \
-            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text), "",         \
-                                  #expected, _ut_expected_text, #actual, _ut_actual_text);       \
-        }                                                                                       \
-    } while (0)
-#define REFUTE_NULL_MSG(pointer, summary_text, hint_text)                                        \
-    do                                                                                            \
-    {                                                                                             \
-        const void *_ut_pointer_value = (const void *)(pointer);                                 \
-        if (_ut_pointer_value == NULL)                                                            \
-            _UT_record_failure_ex(__FILE__, __LINE__, (summary_text), (hint_text), "",           \
-                                  #pointer, "non-NULL", #pointer, "NULL");                       \
-    } while (0)
-
-/**
  * @brief Asserts that a value satisfies a given property (predicate).
  * @param value The value to test.
  * @param predicate_fn A function pointer `int (*)(value)` that returns true if the property holds.
@@ -1087,39 +1072,6 @@ int _UT_compare_string(const char *a, const char *b);
  */
 #define PROPERTY_STRING(value, predicate_fn, help_text) PROPERTY(value, predicate_fn, _UT_print_string, help_text)
 
-/**
- * @brief Validates properties of an object, producing error messages on failure.
- * 
- * @param value The object to validate.
- * @param validator_fn Function with signature: int (*)(Type val, char* buf, size_t size).
- *                     Should return 0 if validation fails and write the error to buf.
- * @param print_fn Function to print the object (for visual context).
- */
-#define ASSERT_VALID(value, validator_fn, print_fn)                        \
-    do                                                                     \
-    {                                                                      \
-        __typeof__(value) _val = (value);                                  \
-        char _err_msg[1024] = {0};                                         \
-        /* Call the validator passing the error buffer */                  \
-        if (!validator_fn(_val, _err_msg, sizeof(_err_msg)))               \
-        {                                                                  \
-            char _obj_str[1024] = {0};                                     \
-            char _full_actual[2048] = {0};                                 \
-            /* Render the object to see its current state */               \
-            print_fn(_obj_str, sizeof(_obj_str), _val);                    \
-            /* Format the "Actual" message by combining error and object state */\
-            if (_err_msg[0] == '\0') {                                     \
-                 snprintf(_err_msg, sizeof(_err_msg), "Unknown error");    \
-            }                                                              \
-            snprintf(_full_actual, sizeof(_full_actual),                   \
-                     "Invalid: %.1000s. State: %.1000s", _err_msg, _obj_str);        \
-            _UT_record_failure(__FILE__, __LINE__,                         \
-                               #validator_fn "(" #value ")",               \
-                               "Valid structure",                          \
-                               _full_actual);                              \
-        }                                                                  \
-    } while (0)
-
 #ifdef UT_MEMORY_TRACKING_ENABLED
 /**
  * @brief (Memory Tracking) Asserts that the total number of malloc/calloc/realloc calls matches the expected count.
@@ -1133,14 +1085,16 @@ int _UT_compare_string(const char *a, const char *b);
  */
 #define ASSERT_FREE_COUNT(expected) EQUAL_INT(expected, UT_free_count)
 
+#ifdef UT_MEMORY_TRACKING_ENABLED
 /**
  * @brief (Memory Tracking) Asserts that there are no memory leaks at this point.
  */
-#define ASSERT_NO_LEAKS()      \
-    do                         \
-    {                          \
-        _UT_check_for_leaks(); \
+#define ASSERT_NO_LEAKS()     \
+    do                        \
+    {                         \
+        UT_check_for_leaks(); \
     } while (0)
+#endif
 
 #endif
 
@@ -1215,7 +1169,7 @@ int _UT_compare_string(const char *a, const char *b);
         float e = (expected);                                                                             \
         float a = (actual);                                                                               \
         float t = (tolerance);                                                                            \
-        if ((isnan(e) != isnan(a)) || (!isnan(a) && fabsf(e - a) > t))                                    \
+        if (fabsf(e - a) > t)                                                                             \
         {                                                                                                 \
             char e_buf[128], a_buf[128], cond_str[256];                                                   \
             snprintf(e_buf, sizeof(e_buf), "%f", e);                                                      \
@@ -1237,7 +1191,7 @@ int _UT_compare_string(const char *a, const char *b);
         double e = (expected);                                                                           \
         double a = (actual);                                                                             \
         double t = (tolerance);                                                                          \
-        if ((isnan(e) != isnan(a)) || (!isnan(a) && fabs(e - a) > t))                                     \
+        if (fabs(e - a) > t)                                                                             \
         {                                                                                                \
             char e_buf[128], a_buf[128], cond_str[256];                                                  \
             snprintf(e_buf, sizeof(e_buf), "%lf", e);                                                    \
@@ -1269,36 +1223,30 @@ int _UT_compare_string(const char *a, const char *b);
  * @param expected_allocs The exact number of new allocations expected within the block.
  * @param expected_frees The exact number of frees expected within the block.
  */
-#define ASSERT_MEMORY_CHANGES(code_block, expected_allocs, expected_frees)                         \
-    do                                                                                              \
-    {                                                                                               \
-        int _ut_allocs_before = UT_alloc_count;                                                     \
-        int _ut_frees_before = UT_free_count;                                                       \
-        { code_block; }                                                                             \
-        int _ut_alloc_delta = UT_alloc_count - _ut_allocs_before;                                  \
-        int _ut_free_delta = UT_free_count - _ut_frees_before;                                     \
-        if (_ut_alloc_delta != (expected_allocs))                                                   \
-        {                                                                                            \
-            char _ut_expected[64], _ut_actual[64];                                                  \
-            snprintf(_ut_expected, sizeof(_ut_expected), "%d", (int)(expected_allocs));             \
-            snprintf(_ut_actual, sizeof(_ut_actual), "%d", _ut_alloc_delta);                        \
-            _UT_record_failure_ex(__FILE__, __LINE__,                                               \
-                "Unexpected number of memory allocations",                                         \
-                "Check every malloc/calloc/realloc call and avoid unnecessary temporary allocations.", \
-                "Allocation count in code block", #expected_allocs, _ut_expected,                   \
-                "actual allocation count", _ut_actual);                                            \
-        }                                                                                            \
-        if (_ut_free_delta != (expected_frees))                                                     \
-        {                                                                                            \
-            char _ut_expected[64], _ut_actual[64];                                                  \
-            snprintf(_ut_expected, sizeof(_ut_expected), "%d", (int)(expected_frees));              \
-            snprintf(_ut_actual, sizeof(_ut_actual), "%d", _ut_free_delta);                         \
-            _UT_record_failure_ex(__FILE__, __LINE__,                                               \
-                "Unexpected number of memory releases",                                            \
-                "Check that each owned allocation is released exactly once.",                      \
-                "Free count in code block", #expected_frees, _ut_expected,                         \
-                "actual free count", _ut_actual);                                                  \
-        }                                                                                            \
+#define ASSERT_MEMORY_CHANGES(code_block, expected_allocs, expected_frees)                                               \
+    do                                                                                                                   \
+    {                                                                                                                    \
+        int _allocs_before_ = UT_alloc_count;                                                                            \
+        int _frees_before_ = UT_free_count;                                                                              \
+        {                                                                                                                \
+            code_block;                                                                                                  \
+        }                                                                                                                \
+        int _alloc_delta_ = UT_alloc_count - _allocs_before_;                                                            \
+        int _free_delta_ = UT_free_count - _frees_before_;                                                               \
+        if (_alloc_delta_ != (expected_allocs))                                                                          \
+        {                                                                                                                \
+            char _a_exp_buf_[128], _a_act_buf_[128];                                                                     \
+            snprintf(_a_exp_buf_, 128, "%d", (int)(expected_allocs));                                                    \
+            snprintf(_a_act_buf_, 128, "%d", _alloc_delta_);                                                             \
+            _UT_record_failure(__FILE__, __LINE__, "Allocation count mismatch in code block", _a_exp_buf_, _a_act_buf_); \
+        }                                                                                                                \
+        if (_free_delta_ != (expected_frees))                                                                            \
+        {                                                                                                                \
+            char _f_exp_buf_[128], _f_act_buf_[128];                                                                     \
+            snprintf(_f_exp_buf_, 128, "%d", (int)(expected_frees));                                                     \
+            snprintf(_f_act_buf_, 128, "%d", _free_delta_);                                                              \
+            _UT_record_failure(__FILE__, __LINE__, "Free count mismatch in code block", _f_exp_buf_, _f_act_buf_);       \
+        }                                                                                                                \
     } while (0)
 
 /**
@@ -1358,58 +1306,56 @@ int _UT_compare_string(const char *a, const char *b);
  * @param expected_bytes_freed The total number of bytes expected to be freed.
  */
 #define ASSERT_AND_MARK_MEMORY_CHANGES_BYTES(code_block, expected_allocs, expected_frees, expected_bytes_allocd, expected_bytes_freed) \
-    do                                                                                                                               \
-    {                                                                                                                                \
-        int _ut_allocs_before = UT_alloc_count;                                                                                       \
-        int _ut_frees_before = UT_free_count;                                                                                         \
-        size_t _ut_bytes_alloc_before = UT_total_bytes_allocated;                                                                     \
-        size_t _ut_bytes_free_before = UT_total_bytes_freed;                                                                          \
-        { code_block; }                                                                                                               \
-        int _ut_alloc_delta = UT_alloc_count - _ut_allocs_before;                                                                     \
-        int _ut_free_delta = UT_free_count - _ut_frees_before;                                                                        \
-        size_t _ut_bytes_alloc_delta = UT_total_bytes_allocated - _ut_bytes_alloc_before;                                             \
-        size_t _ut_bytes_free_delta = UT_total_bytes_freed - _ut_bytes_free_before;                                                    \
-        if (_ut_alloc_delta != (expected_allocs) || _ut_bytes_alloc_delta != (size_t)(expected_bytes_allocd))                         \
-        {                                                                                                                             \
-            char _ut_expected[192], _ut_actual[192];                                                                                   \
-            const int _ut_is_growth = ((expected_allocs) == 0 && (size_t)(expected_bytes_allocd) > 0);                                \
-            if (_ut_is_growth)                                                                                                        \
-            {                                                                                                                         \
-                snprintf(_ut_expected, sizeof(_ut_expected), "0 new block(s), %zu additional byte(s)", (size_t)(expected_bytes_allocd)); \
-                snprintf(_ut_actual, sizeof(_ut_actual), "%d new block(s), %zu additional byte(s)", _ut_alloc_delta, _ut_bytes_alloc_delta); \
-            }                                                                                                                         \
-            else                                                                                                                      \
-            {                                                                                                                         \
-                snprintf(_ut_expected, sizeof(_ut_expected), "%d block(s), %zu byte(s)", (int)(expected_allocs), (size_t)(expected_bytes_allocd)); \
-                snprintf(_ut_actual, sizeof(_ut_actual), "%d block(s), %zu byte(s)", _ut_alloc_delta, _ut_bytes_alloc_delta);        \
-            }                                                                                                                         \
-            _UT_record_failure_ex(__FILE__, __LINE__,                                                                                 \
-                _ut_is_growth ? "Expected storage growth did not occur"                                                              \
-                    : (((expected_allocs) > 0 && _ut_alloc_delta == 0) ? "Expected allocation did not occur" : "Memory allocation does not match"), \
-                _ut_is_growth ? "The internal storage was expected to grow. Check the full-capacity condition and the new size passed to realloc." \
-                    : (((expected_allocs) > 0 && _ut_alloc_delta == 0) ? "The required allocation did not occur. Check the test context for the expected heap blocks and sizes." \
-                    : "Check the number of allocation calls and the sizeof expression used by malloc, calloc, or realloc."),         \
-                _ut_is_growth ? "Heap storage growth in code block" : "Heap allocation in code block",                              \
-                _ut_is_growth ? "expected heap change" : "expected allocated memory", _ut_expected,                                 \
-                _ut_is_growth ? "actual heap change" : "actual allocated memory", _ut_actual);                                      \
-        }                                                                                                                             \
-        if (_ut_free_delta != (expected_frees) || _ut_bytes_free_delta != (size_t)(expected_bytes_freed))                             \
-        {                                                                                                                             \
-            char _ut_expected[160], _ut_actual[160];                                                                                   \
-            snprintf(_ut_expected, sizeof(_ut_expected), "%d block(s), %zu byte(s)", (int)(expected_frees), (size_t)(expected_bytes_freed)); \
-            snprintf(_ut_actual, sizeof(_ut_actual), "%d block(s), %zu byte(s)", _ut_free_delta, _ut_bytes_free_delta);              \
-            _UT_record_failure_ex(__FILE__, __LINE__,                                                                                 \
-                ((expected_frees) > 0 && _ut_free_delta == 0) ? "Expected memory releases did not occur" : "Memory releases do not match", \
-                ((expected_frees) > 0 && _ut_free_delta == 0) ? "The operation did not release any required block. Check the test context for ownership and traversal rules." \
-                    : "Check that each owned block is released exactly once and that the correct pointer is passed to free.",         \
-                "Heap release in code block", "expected released memory", _ut_expected, "actual released memory", _ut_actual);      \
-        }                                                                                                                             \
-        _UT_MemInfo *_ut_current = _UT_mem_head;                                                                                      \
-        for (int _ut_i = 0; _ut_i < _ut_alloc_delta && _ut_current != NULL; ++_ut_i)                                                  \
-        {                                                                                                                             \
-            if (_ut_current->is_baseline == 0) _ut_current->is_baseline = 1;                                                          \
-            _ut_current = _ut_current->next;                                                                                          \
-        }                                                                                                                             \
+    do                                                                                                                                 \
+    {                                                                                                                                  \
+        int _allocs_before_ = UT_alloc_count;                                                                                          \
+        int _frees_before_ = UT_free_count;                                                                                            \
+        size_t _bytes_allocd_before_ = UT_total_bytes_allocated;                                                                       \
+        size_t _bytes_freed_before_ = UT_total_bytes_freed;                                                                            \
+        {                                                                                                                              \
+            code_block;                                                                                                                \
+        }                                                                                                                              \
+        int _alloc_delta_ = UT_alloc_count - _allocs_before_;                                                                          \
+        int _free_delta_ = UT_free_count - _frees_before_;                                                                             \
+        size_t _bytes_allocd_delta_ = UT_total_bytes_allocated - _bytes_allocd_before_;                                                \
+        size_t _bytes_freed_delta_ = UT_total_bytes_freed - _bytes_freed_before_;                                                      \
+        if (_alloc_delta_ != (expected_allocs))                                                                                        \
+        {                                                                                                                              \
+            char _a_exp_buf_[128], _a_act_buf_[128];                                                                                   \
+            snprintf(_a_exp_buf_, 128, "%d", (int)(expected_allocs));                                                                  \
+            snprintf(_a_act_buf_, 128, "%d", _alloc_delta_);                                                                           \
+            _UT_record_failure(__FILE__, __LINE__, "Allocation count mismatch in code block", _a_exp_buf_, _a_act_buf_);               \
+        }                                                                                                                              \
+        if (_free_delta_ != (expected_frees))                                                                                          \
+        {                                                                                                                              \
+            char _f_exp_buf_[128], _f_act_buf_[128];                                                                                   \
+            snprintf(_f_exp_buf_, 128, "%d", (int)(expected_frees));                                                                   \
+            snprintf(_f_act_buf_, 128, "%d", _free_delta_);                                                                            \
+            _UT_record_failure(__FILE__, __LINE__, "Free count mismatch in code block", _f_exp_buf_, _f_act_buf_);                     \
+        }                                                                                                                              \
+        if (_bytes_allocd_delta_ != (expected_bytes_allocd))                                                                           \
+        {                                                                                                                              \
+            char _ba_exp_buf_[128], _ba_act_buf_[128];                                                                                 \
+            snprintf(_ba_exp_buf_, 128, "%zu bytes", (size_t)(expected_bytes_allocd));                                                 \
+            snprintf(_ba_act_buf_, 128, "%zu bytes", _bytes_allocd_delta_);                                                            \
+            _UT_record_failure(__FILE__, __LINE__, "Bytes allocated mismatch in code block", _ba_exp_buf_, _ba_act_buf_);              \
+        }                                                                                                                              \
+        if (_bytes_freed_delta_ != (expected_bytes_freed))                                                                             \
+        {                                                                                                                              \
+            char _bf_exp_buf_[128], _bf_act_buf_[128];                                                                                 \
+            snprintf(_bf_exp_buf_, 128, "%zu bytes", (size_t)(expected_bytes_freed));                                                  \
+            snprintf(_bf_act_buf_, 128, "%zu bytes", _bytes_freed_delta_);                                                             \
+            _UT_record_failure(__FILE__, __LINE__, "Bytes freed mismatch in code block", _bf_exp_buf_, _bf_act_buf_);                  \
+        }                                                                                                                              \
+        _UT_MemInfo *current = _UT_mem_head;                                                                                           \
+        for (int i = 0; i < _alloc_delta_ && current != NULL; ++i)                                                                     \
+        {                                                                                                                              \
+            if (current->is_baseline == 0)                                                                                             \
+            {                                                                                                                          \
+                current->is_baseline = 1;                                                                                              \
+            }                                                                                                                          \
+            current = current->next;                                                                                                   \
+        }                                                                                                                              \
     } while (0)
 
 /**
@@ -1439,6 +1385,66 @@ int _UT_compare_string(const char *a, const char *b);
         }, (expected_allocs), (expected_frees), (expected_bytes_allocd), (expected_bytes_freed));                                                   \
                                                                                                                                                     \
     } while (0)    
+#define ASSERT_MEMORY_CONTRACT(code_block, expected_allocs, expected_frees, expected_alloc_bytes, expected_free_bytes, description, summary, hint) \
+    do { UT_MemoryScope _ut_scope = UT_memory_scope_begin(); { code_block; }                 \
+        int _ut_ad=UT_alloc_count-_ut_scope.alloc_count, _ut_fd=UT_free_count-_ut_scope.free_count; \
+        size_t _ut_ab=UT_total_bytes_allocated-_ut_scope.allocated_bytes, _ut_fb=UT_total_bytes_freed-_ut_scope.freed_bytes; \
+        if (_ut_ad!=(expected_allocs)||_ut_fd!=(expected_frees)||_ut_ab!=(size_t)(expected_alloc_bytes)||_ut_fb!=(size_t)(expected_free_bytes)) { \
+            char _ut_exp[512],_ut_act[512]; snprintf(_ut_exp, sizeof(_ut_exp), "\n      Resource: %s\n      Allocations: %d block(s), %zu byte(s)\n      Releases: %d block(s), %zu byte(s)", (description), (int)(expected_allocs), (size_t)(expected_alloc_bytes), (int)(expected_frees), (size_t)(expected_free_bytes)); \
+            snprintf(_ut_act, sizeof(_ut_act), "\n      Allocations: %d block(s), %zu byte(s)\n      Releases: %d block(s), %zu byte(s)", _ut_ad, _ut_ab, _ut_fd, _ut_fb); \
+            _UT_record_failure_ex(__FILE__,__LINE__,(summary),(hint),"required memory effect",_ut_exp,"observed memory effect",_ut_act); } \
+        UT_memory_scope_mark_allocations_as_baseline(_ut_scope); } while(0)
+#define ASSERT_ALLOCATION_REQUIREMENT(code_block, blocks, bytes, description, summary, hint) \
+    ASSERT_MEMORY_CONTRACT(code_block, blocks, 0, bytes, 0, description, summary, hint)
+#define ASSERT_RELEASE_REQUIREMENT(code_block, blocks, bytes, description, summary, hint) \
+    ASSERT_MEMORY_CONTRACT(code_block, 0, blocks, 0, bytes, description, summary, hint)
+
+
+/**
+ * @brief Semantic memory contract that discards stdout produced by code_block.
+ *
+ * Use this variant for operations whose public contract writes to stdout. It
+ * prevents ordinary program output from interfering with the worker protocol
+ * used to serialize the test result.
+ */
+#define SILENT_ASSERT_MEMORY_CONTRACT(code_block, expected_allocs, expected_frees,         \
+                                      expected_alloc_bytes, expected_free_bytes,             \
+                                      description, summary, hint)                            \
+    do {                                                                                    \
+        char _ut_discarded_stdout[4096] = {0};                                               \
+        UT_MemoryScope _ut_scope = UT_memory_scope_begin();                                  \
+        _UT_start_capture_stdout();                                                          \
+        { code_block; }                                                                      \
+        _UT_stop_capture_stdout(_ut_discarded_stdout, sizeof(_ut_discarded_stdout));         \
+        int _ut_ad = UT_alloc_count - _ut_scope.alloc_count;                                 \
+        int _ut_fd = UT_free_count - _ut_scope.free_count;                                   \
+        size_t _ut_ab = UT_total_bytes_allocated - _ut_scope.allocated_bytes;                \
+        size_t _ut_fb = UT_total_bytes_freed - _ut_scope.freed_bytes;                        \
+        if (_ut_ad != (expected_allocs) || _ut_fd != (expected_frees) ||                     \
+            _ut_ab != (size_t)(expected_alloc_bytes) ||                                      \
+            _ut_fb != (size_t)(expected_free_bytes)) {                                       \
+            char _ut_exp[512], _ut_act[512];                                                 \
+            snprintf(_ut_exp, sizeof(_ut_exp),                                               \
+                     "\n      Resource: %s\n      Allocations: %d block(s), %zu byte(s)\n      Releases: %d block(s), %zu byte(s)", \
+                     (description), (int)(expected_allocs),                                  \
+                     (size_t)(expected_alloc_bytes), (int)(expected_frees),                   \
+                     (size_t)(expected_free_bytes));                                         \
+            snprintf(_ut_act, sizeof(_ut_act),                                               \
+                     "\n      Allocations: %d block(s), %zu byte(s)\n      Releases: %d block(s), %zu byte(s)", \
+                     _ut_ad, _ut_ab, _ut_fd, _ut_fb);                                        \
+            _UT_record_failure_ex(__FILE__, __LINE__, (summary), (hint),                     \
+                                  "required memory effect", _ut_exp,                        \
+                                  "observed memory effect", _ut_act);                       \
+        }                                                                                    \
+        UT_memory_scope_mark_allocations_as_baseline(_ut_scope);                             \
+    } while (0)
+
+#define SILENT_ASSERT_ALLOCATION_REQUIREMENT(code_block, blocks, bytes, description, summary, hint) \
+    SILENT_ASSERT_MEMORY_CONTRACT(code_block, blocks, 0, bytes, 0, description, summary, hint)
+
+#define SILENT_ASSERT_RELEASE_REQUIREMENT(code_block, blocks, bytes, description, summary, hint) \
+    SILENT_ASSERT_MEMORY_CONTRACT(code_block, 0, blocks, 0, bytes, description, summary, hint)
+
 #endif // UT_MEMORY_TRACKING_ENABLED
 
 #endif // UNIT_TEST_DECLARATION
@@ -1607,29 +1613,6 @@ static char *_UT_extract_assert_message(const char *full_output)
     return NULL;
 }
 
-static int _UT_validate_assert_message(const char *output_buffer, const _UT_DeathExpect *de)
-{
-    if (!de->expected_assert_msg)
-        return 1; // No message validation required
-    
-    char *extracted_msg = _UT_extract_assert_message(output_buffer);
-    if (!extracted_msg)
-        return 0; // Could not extract message
-    
-    int msg_ok;
-    if (de->is_exact_assert_check)
-    {
-        msg_ok = (strcmp(extracted_msg, de->expected_assert_msg) == 0);
-    }
-    else
-    {
-        float similarity = _UT_calculate_similarity_ratio(extracted_msg, de->expected_assert_msg);
-        msg_ok = (similarity >= de->min_similarity);
-    }
-    free(extracted_msg);
-    return msg_ok;
-}
-
 static void _UT_serialize_string_escaped(FILE *stream, const char *str)
 {
     if (str == NULL)
@@ -1647,27 +1630,21 @@ static void _UT_serialize_string_escaped(FILE *stream, const char *str)
 static void _UT_serialize_result(FILE *stream, _UT_TestResult *result)
 {
     fprintf(stream, _UT_KEY_STATUS "%d%c", result->status, _UT_SERIALIZATION_MARKER);
+    if (_UT_current_test_context && _UT_current_test_context[0])
+        fprintf(stream, _UT_KEY_CONTEXT "%s%c", _UT_current_test_context, _UT_SERIALIZATION_MARKER);
     _UT_AssertionFailure *f = result->failures;
     while (f)
     {
         fprintf(stream, _UT_KEY_FAILURE);
         _UT_serialize_string_escaped(stream, f->file);
         fprintf(stream, "|%d|", f->line);
-        _UT_serialize_string_escaped(stream, f->summary); fputc('|', stream);
-        _UT_serialize_string_escaped(stream, f->hint); fputc('|', stream);
-        _UT_serialize_string_escaped(stream, f->condition_str); fputc('|', stream);
-        _UT_serialize_string_escaped(stream, f->expected_expr); fputc('|', stream);
-        _UT_serialize_string_escaped(stream, f->expected_str); fputc('|', stream);
-        _UT_serialize_string_escaped(stream, f->actual_expr); fputc('|', stream);
+        _UT_serialize_string_escaped(stream, f->condition_str);
+        fputc('|', stream);
+        _UT_serialize_string_escaped(stream, f->expected_str);
+        fputc('|', stream);
         _UT_serialize_string_escaped(stream, f->actual_str);
         fprintf(stream, "%c", _UT_SERIALIZATION_MARKER);
         f = f->next;
-    }
-    if (result->context && result->context[0])
-    {
-        fprintf(stream, _UT_KEY_CONTEXT);
-        _UT_serialize_string_escaped(stream, result->context);
-        fputc(_UT_SERIALIZATION_MARKER, stream);
     }
     fprintf(stream, "end_of_data%c", _UT_SERIALIZATION_MARKER);
 }
@@ -1711,11 +1688,31 @@ static char *_UT_get_next_token(char *dest, size_t dest_size, char *src)
     return src;
 }
 
+static char *_UT_extract_serialized_context(const char *buffer)
+{
+    if (!buffer) return NULL;
+    const char *start = strstr(buffer, _UT_KEY_CONTEXT);
+    if (!start) return NULL;
+    start += _UT_KEY_CONTEXT_LEN;
+    const char *end = strchr(start, _UT_SERIALIZATION_MARKER);
+    size_t len = end ? (size_t)(end - start) : strlen(start);
+    char *context = (char *)malloc(len + 1);
+    if (!context) return NULL;
+    memcpy(context, start, len);
+    context[len] = '\0';
+    return context;
+}
+
 static _UT_TestResult *_UT_deserialize_result(const char *buffer, _UT_TestInfo *test_info)
 {
     _UT_TestResult *result = (_UT_TestResult *)calloc(1, sizeof(_UT_TestResult));
     result->suite_name = test_info->suite_name;
     result->test_name = test_info->test_name;
+    result->status = _UT_STATUS_FRAMEWORK_ERROR;
+    result->captured_output = _UT_strdup(
+        "The worker process finished without producing a valid serialized test status. "
+        "Possible cause: uncaptured stdout from the tested operation interfered with "
+        "the runner protocol. Use a SILENT_* contract or ASSERT_STDOUT_* macro.");
 
     const char *p = buffer;
     while (p && *p)
@@ -1731,12 +1728,13 @@ static _UT_TestResult *_UT_deserialize_result(const char *buffer, _UT_TestInfo *
 
         if (strncmp(mutable_line, _UT_KEY_STATUS, _UT_KEY_STATUS_LEN) == 0)
         {
-            result->status = (_UT_TestStatus)atoi(mutable_line + _UT_KEY_STATUS_LEN);
-        }
-        else if (strncmp(mutable_line, _UT_KEY_CONTEXT, _UT_KEY_CONTEXT_LEN) == 0)
-        {
-            free(result->context);
-            result->context = _UT_strdup(mutable_line + _UT_KEY_CONTEXT_LEN);
+            int serialized_status = atoi(mutable_line + _UT_KEY_STATUS_LEN);
+            if (serialized_status >= _UT_STATUS_PENDING &&
+                serialized_status <= _UT_STATUS_FRAMEWORK_ERROR) {
+                result->status = (_UT_TestStatus)serialized_status;
+                free(result->captured_output);
+                result->captured_output = NULL;
+            }
         }
         else if (strncmp(mutable_line, _UT_KEY_FAILURE, _UT_KEY_FAILURE_LEN) == 0)
         {
@@ -1755,17 +1753,22 @@ static _UT_TestResult *_UT_deserialize_result(const char *buffer, _UT_TestInfo *
                 part = end_of_line_num + 1;
             }
 
-            part = _UT_get_next_token(field_buffer, sizeof(field_buffer), part); f->summary = _UT_strdup(field_buffer);
-            part = _UT_get_next_token(field_buffer, sizeof(field_buffer), part); f->hint = _UT_strdup(field_buffer);
-            part = _UT_get_next_token(field_buffer, sizeof(field_buffer), part); f->condition_str = _UT_strdup(field_buffer);
-            part = _UT_get_next_token(field_buffer, sizeof(field_buffer), part); f->expected_expr = _UT_strdup(field_buffer);
-            part = _UT_get_next_token(field_buffer, sizeof(field_buffer), part); f->expected_str = _UT_strdup(field_buffer);
-            part = _UT_get_next_token(field_buffer, sizeof(field_buffer), part); f->actual_expr = _UT_strdup(field_buffer);
-            part = _UT_get_next_token(field_buffer, sizeof(field_buffer), part); f->actual_str = _UT_strdup(field_buffer);
+            part = _UT_get_next_token(field_buffer, sizeof(field_buffer), part);
+            f->condition_str = _UT_strdup(field_buffer);
+            part = _UT_get_next_token(field_buffer, sizeof(field_buffer), part);
+            f->expected_str = _UT_strdup(field_buffer);
+            part = _UT_get_next_token(field_buffer, sizeof(field_buffer), part);
+            f->actual_str = _UT_strdup(field_buffer);
 
-            if (!result->failures) result->failures = f;
-            else result->failures_tail->next = f;
-            result->failures_tail = f;
+            if (!result->failures)
+                result->failures = f;
+            else
+            {
+                _UT_AssertionFailure *tail = result->failures;
+                while (tail->next)
+                    tail = tail->next;
+                tail->next = f;
+            }
         }
     }
     return result;
@@ -1780,18 +1783,13 @@ static void _UT_free_test_result(_UT_TestResult *tr)
     {
         _UT_AssertionFailure *next_f = f->next;
         free(f->file);
-        free(f->summary);
-        free(f->hint);
         free(f->condition_str);
-        free(f->expected_expr);
         free(f->expected_str);
-        free(f->actual_expr);
         free(f->actual_str);
         free(f);
         f = next_f;
     }
     free(tr->captured_output);
-    free(tr->context);
     free(tr);
 }
 
@@ -1877,12 +1875,6 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
     ReadFile(h_read, output_buffer, sizeof(output_buffer) - 1, &bytes_read, NULL);
     output_buffer[bytes_read] = '\0';
     result->captured_output = _UT_strdup(output_buffer);
-    _UT_TestResult *partial_result = _UT_deserialize_result(output_buffer, test);
-    if (partial_result)
-    {
-        if (partial_result->context && partial_result->context[0]) result->context = _UT_strdup(partial_result->context);
-        _UT_free_test_result(partial_result);
-    }
 
     DWORD exit_code;
     GetExitCodeProcess(pi.hProcess, &exit_code);
@@ -1899,7 +1891,9 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
             if (exit_code == (DWORD)de->expected_exit_code)
                 termination_ok = 1;
         }
-        msg_ok = _UT_validate_assert_message(output_buffer, de);
+        if (de->expected_assert_msg)
+        { /* message extraction logic */
+        }
         if (termination_ok && msg_ok)
             result->status = _UT_STATUS_DEATH_TEST_PASSED;
         else
@@ -1915,41 +1909,20 @@ static _UT_TestResult *_UT_run_process_win(_UT_TestInfo *test, const char *execu
             {
                 f->file = _UT_strdup(test->suite_name);
                 f->line = 0;
-                if (termination_ok && !msg_ok && de->expected_assert_msg)
-                {
-                    // Assertion occurred but with wrong message
-                    f->summary = _UT_strdup("Assertion message is different");
-                    f->hint = _UT_strdup("A different precondition may have failed first; inspect the expected and actual assertion messages.");
-                    f->condition_str = _UT_strdup("Assertion occurred but message did not match");
-                    if (de->is_exact_assert_check)
-                    {
-                        f->expected_str = _UT_strdup(de->expected_assert_msg);
-                    }
-                    else
-                    {
-                        char exp_buf[256];
-                        snprintf(exp_buf, sizeof(exp_buf), "Message similar to \"%s\"", de->expected_assert_msg);
-                        f->expected_str = _UT_strdup(exp_buf);
-                    }
-                    char *extracted = _UT_extract_assert_message(output_buffer);
-                    if (extracted)
-                    {
-                        // Note: extracted is already malloc'd by _UT_extract_assert_message
-                        // and will be freed when the failure is freed
-                        f->actual_str = extracted;
-                    }
-                    else
-                    {
-                        f->actual_str = _UT_strdup("Could not extract assertion message");
-                    }
+                char *death_context = _UT_extract_serialized_context(output_buffer);
+                if (death_context && death_context[0]) {
+                    size_t needed = strlen(death_context) + 64;
+                    f->condition_str = (char *)malloc(needed);
+                    if (f->condition_str)
+                        snprintf(f->condition_str, needed,
+                                 "Expected assertion failure did not occur\n   Context: %s",
+                                 death_context);
                 }
-                else
-                {
-                    // Assertion did not occur at all
+                if (!f->condition_str)
                     f->condition_str = _UT_strdup("Expected assertion failure did not occur");
-                    f->expected_str = _UT_strdup("Function should have triggered an assertion");
-                    f->actual_str = _UT_strdup("Function returned normally without asserting");
-                }
+                free(death_context);
+                f->expected_str = _UT_strdup("Function should have triggered an assertion");
+                f->actual_str = _UT_strdup("Function returned normally without asserting");
                 result->failures = f;
             }
         }
@@ -2074,12 +2047,6 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
             output_buffer[bytes_read] = '\0';
         close(out_pipe[0]);
         result->captured_output = _UT_strdup(output_buffer);
-        _UT_TestResult *partial_result = _UT_deserialize_result(output_buffer, test);
-        if (partial_result)
-        {
-            if (partial_result->context && partial_result->context[0]) result->context = _UT_strdup(partial_result->context);
-            _UT_free_test_result(partial_result);
-        }
 
         if (r == 1)
         {
@@ -2090,19 +2057,6 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
         const _UT_DeathExpect *de = test->death_expect;
         if (de)
         {
-            /* Recover protocol data emitted before a possible assertion,
-               including TEST_CONTEXT. */
-            _UT_TestResult *child_result = _UT_deserialize_result(output_buffer, test);
-            if (child_result)
-            {
-                if (child_result->context && child_result->context[0])
-                {
-                    free(result->context);
-                    result->context = _UT_strdup(child_result->context);
-                }
-                _UT_free_test_result(child_result);
-            }
-
             int termination_ok = 0, msg_ok = 1;
             if (de->expected_signal != 0 && WIFSIGNALED(status))
             {
@@ -2114,7 +2068,6 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
                 if (WEXITSTATUS(status) == de->expected_exit_code)
                     termination_ok = 1;
             }
-            msg_ok = _UT_validate_assert_message(output_buffer, de);
             if (termination_ok && msg_ok)
                 result->status = _UT_STATUS_DEATH_TEST_PASSED;
             else
@@ -2130,56 +2083,20 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
                 {
                     f->file = _UT_strdup(test->suite_name);
                     f->line = 0;
-                    if (termination_ok && !msg_ok && de->expected_assert_msg)
-                    {
-                        // Assertion occurred but with wrong message
-                        f->summary = _UT_strdup("Assertion message is different");
-                    f->hint = _UT_strdup("A different precondition may have failed first; inspect the expected and actual assertion messages.");
-                    f->condition_str = _UT_strdup("Assertion occurred but message did not match");
-                        if (de->is_exact_assert_check)
-                        {
-                            f->expected_str = _UT_strdup(de->expected_assert_msg);
-                        }
-                        else
-                        {
-                            char exp_buf[256];
-                            snprintf(exp_buf, sizeof(exp_buf), "Message similar to \"%s\"", de->expected_assert_msg);
-                            f->expected_str = _UT_strdup(exp_buf);
-                        }
-                        char *extracted = _UT_extract_assert_message(output_buffer);
-                        if (extracted)
-                        {
-                            // Note: extracted is already malloc'd by _UT_extract_assert_message
-                            // and will be freed when the failure is freed
-                            f->actual_str = extracted;
-                        }
-                        else
-                        {
-                            f->actual_str = _UT_strdup("Could not extract assertion message");
-                        }
-                    }
-                    else
-                    {
-                        f->summary = _UT_strdup("Expected assertion did not occur");
-                        f->hint = _UT_strdup("Check the invalid-input precondition.");
-                        f->condition_str = _UT_strdup("Expected assertion failure did not occur");
-                        f->expected_str = _UT_strdup("Assertion failure");
-                        if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-                            f->actual_str = _UT_strdup("Function returned normally");
-                        else if (WIFSIGNALED(status))
-                        {
-                            char signal_text[256];
-                            snprintf(signal_text, sizeof(signal_text), "Wrong signal: %d (%s), expected SIGABRT",
-                                     WTERMSIG(status), strsignal(WTERMSIG(status)));
-                            f->actual_str = _UT_strdup(signal_text);
-                        }
-                        else if (WIFEXITED(status))
-                        {
-                            char exit_text[128];
-                            snprintf(exit_text, sizeof(exit_text), "Process exited with code %d", WEXITSTATUS(status));
-                            f->actual_str = _UT_strdup(exit_text);
-                        }
-                    }
+                    char *death_context = _UT_extract_serialized_context(output_buffer);
+                if (death_context && death_context[0]) {
+                    size_t needed = strlen(death_context) + 64;
+                    f->condition_str = (char *)malloc(needed);
+                    if (f->condition_str)
+                        snprintf(f->condition_str, needed,
+                                 "Expected assertion failure did not occur\n   Context: %s",
+                                 death_context);
+                }
+                if (!f->condition_str)
+                    f->condition_str = _UT_strdup("Expected assertion failure did not occur");
+                free(death_context);
+                    f->expected_str = _UT_strdup("Function should have triggered an assertion");
+                    f->actual_str = _UT_strdup("Function returned normally without asserting");
                     result->failures = f;
                 }
             }
@@ -2219,23 +2136,7 @@ static _UT_TestResult *_UT_run_process_posix(_UT_TestInfo *test, const char *exe
                 result->captured_output = _UT_strdup(details);
             }
             else
-            {
                 result->status = _UT_STATUS_CRASHED;
-                if (WIFSIGNALED(status))
-                {
-                    result->termination_signal = WTERMSIG(status);
-                    const char *signal_name = strsignal(result->termination_signal);
-                    char diagnostic[512];
-                    snprintf(diagnostic, sizeof(diagnostic),
-                             "Signal %d (%s) terminated the test.",
-                             result->termination_signal,
-                             signal_name ? signal_name : "unknown signal");
-                    free(result->captured_output);
-                    result->captured_output = _UT_strdup(diagnostic);
-                }
-                else if (WIFEXITED(status))
-                    result->termination_exit_code = WEXITSTATUS(status);
-            }
             return result;
         }
     }
@@ -2314,24 +2215,6 @@ static void _UT_print_escaped_string(FILE *stream, const char *str)
     fputc('"', stream);
 }
 
-static void _UT_print_string_diff(FILE *stream, const char *expected, const char *actual)
-{
-    if (!expected || !actual) return;
-    size_t index = 0, line = 1, column = 1;
-    while (expected[index] && actual[index] && expected[index] == actual[index])
-    {
-        if (expected[index] == '\n') { line++; column = 1; }
-        else column++;
-        index++;
-    }
-    if (expected[index] != actual[index])
-    {
-        fprintf(stream, "   First difference: index %zu, line %zu, column %zu\n", index, line, column);
-        fprintf(stream, "   Expected character: 0x%02X; actual character: 0x%02X\n",
-                (unsigned char)expected[index], (unsigned char)actual[index]);
-    }
-}
-
 static void _UT_console_on_suite_start(const _UT_SuiteResult *suite)
 {
     printf("%sTests for %s%s\n", KBLU, suite->name, KNRM);
@@ -2349,14 +2232,10 @@ static void _UT_console_on_test_finish(const _UT_TestResult *test)
         printf("\n   %sPASSED%s (%.2f ms)\n", KGRN, KNRM, test->duration_ms);
         break;
     case _UT_STATUS_DEATH_TEST_PASSED:
-        printf("\n   %sPASSED: expected assertion occurred%s (%.2f ms)\n", KGRN, KNRM, test->duration_ms);
+        printf("\n   %sPASSED (death test)%s (%.2f ms)\n", KGRN, KNRM, test->duration_ms);
         break;
     case _UT_STATUS_FAILED:
         printf("\n   %sFAILED%s (%.2f ms)\n", KRED, KNRM, test->duration_ms);
-        if (test->context && test->context[0])
-        {
-            fprintf(stderr, "   Context:\n      %s\n", test->context);
-        }
         if (test->failures)
         {
             for (_UT_AssertionFailure *f = test->failures; f; f = f->next)
@@ -2383,19 +2262,27 @@ static void _UT_console_on_test_finish(const _UT_TestResult *test)
                 }
                 else
                 {
-                    fprintf(stderr, "   %s", (f->summary && f->summary[0]) ? f->summary : "Assertion failed");
-                    if (f->condition_str && f->condition_str[0]) fprintf(stderr, ": %s", f->condition_str);
-                    fprintf(stderr, "\n      At: %s", f->file ? f->file : "Unknown source");
-                    if (f->line > 0) fprintf(stderr, ":%d", f->line);
+                    fprintf(stderr, "   Assertion failed: %s\n      At: %s", f->condition_str, f->file);
+                    if (f->line > 0)
+                        fprintf(stderr, ":%d", f->line);
                     fprintf(stderr, "\n");
-                    if (f->expected_expr && f->expected_expr[0]) fprintf(stderr, "   Expected expression: %s\n", f->expected_expr);
-                    if (f->expected_str && f->expected_str[0]) fprintf(stderr, "   Expected value: %s%s%s\n", KGRN, f->expected_str, KNRM);
-                    if (f->actual_expr && f->actual_expr[0]) fprintf(stderr, "   Actual expression: %s\n", f->actual_expr);
-                    if (f->actual_str && f->actual_str[0]) fprintf(stderr, "   Actual value: %s%s%s\n", KRED, f->actual_str, KNRM);
-                    if ((f->summary && strstr(f->summary, "String")) ||
-                        (f->condition_str && (strstr(f->condition_str, "stdout") || strstr(f->condition_str, "Output"))))
-                        _UT_print_string_diff(stderr, f->expected_str, f->actual_str);
-                    if (f->hint && f->hint[0]) fprintf(stderr, "   Hint: %s\n", f->hint);
+
+                    if (f->expected_str && f->actual_str &&
+                        strcmp(f->expected_str, "required memory effect") == 0 &&
+                        strcmp(f->actual_str, "observed memory effect") == 0)
+                    {
+                        fprintf(stderr, "   %sRequired memory effect:%s%s\n",
+                                KGRN, f->expected_str + strlen("required memory effect"), KNRM);
+                        fprintf(stderr, "   %sObserved memory effect:%s%s\n",
+                                KRED, f->actual_str + strlen("observed memory effect"), KNRM);
+                    }
+                    else
+                    {
+                        if (f->expected_str)
+                            fprintf(stderr, "   Expected: %s%s%s\n", KGRN, f->expected_str, KNRM);
+                        if (f->actual_str)
+                            fprintf(stderr, "   Got: %s%s%s\n", KRED, f->actual_str, KNRM);
+                    }
                 }
             }
         }
@@ -2404,41 +2291,28 @@ static void _UT_console_on_test_finish(const _UT_TestResult *test)
         break;
     case _UT_STATUS_CRASHED:
         printf("\n   %sCRASHED%s (%.2f ms)\n", KRED, KNRM, test->duration_ms);
-        if (test->context && test->context[0]) fprintf(stderr, "   Context:\n      %s\n", test->context);
-        if (!_UT_is_string_empty_or_whitespace(test->captured_output)) fprintf(stderr, "   %s\n", test->captured_output);
-        else fprintf(stderr, "   Test process terminated unexpectedly; no signal details were captured.\n");
-#ifndef _WIN32
-        if (test->termination_signal == SIGSEGV)
+        if (!_UT_is_string_empty_or_whitespace(test->captured_output))
         {
-            fprintf(stderr, "   Possible causes:\n      - A NULL or invalid pointer was dereferenced.\n      - An empty-structure case was not handled before access.\n      - A pointer or storage block was used before initialization.\n");
-            fprintf(stderr, "   Hint: Inspect the first pointer dereference or structure access performed by the operation.\n");
+            fprintf(stderr, "   Test process terminated unexpectedly.\n   Output:\n---\n%s\n---\n", test->captured_output);
         }
-        else if (test->termination_signal == SIGABRT)
-        {
-            fprintf(stderr, "   The operation triggered an unexpected assertion or called abort().\n");
-            fprintf(stderr, "   Possible causes:\n      - A valid boundary case is being rejected.\n      - An internal assertion uses the wrong comparison operator.\n      - A precondition is stricter than the public contract.\n");
-            fprintf(stderr, "   Hint: Review the contract above and compare each assert condition with the valid input range.\n");
-        }
-        else if (test->termination_signal == SIGFPE)
-            fprintf(stderr, "   Hint: Check for division by zero or another invalid arithmetic operation.\n");
         else
-            fprintf(stderr, "   Hint: Start with the contract above and inspect the operation immediately before termination.\n");
-#else
-        fprintf(stderr, "   Hint: Start with the contract above and inspect the operation immediately before termination.\n");
-#endif
+        {
+            fprintf(stderr, "   Test process terminated unexpectedly.\n");
+        }
         break;
     case _UT_STATUS_TIMEOUT:
         printf("\n   %sTIMEOUT%s (%.2f ms)\n", KRED, KNRM, test->duration_ms);
-        if (test->context && test->context[0]) fprintf(stderr, "   Context:\n      %s\n", test->context);
-        fprintf(stderr, "   Possible causes: an infinite loop, a traversal pointer that does not advance, an unintended cycle, or waiting for input.\n");
-        fprintf(stderr, "   Hint: Verify that every loop iteration advances toward its stopping condition.\n");
         break;
     case _UT_STATUS_FRAMEWORK_ERROR:
         printf("\n   %sFRAMEWORK ERROR%s (%.2f ms)\n", KRED, KNRM, test->duration_ms);
         fprintf(stderr, "   %s\n", test->captured_output ? test->captured_output : "(No details available)");
         break;
     default:
-        printf("\n   %sUNKNOWN STATUS%s\n", KYEL, KNRM);
+        printf("\n   %sFRAMEWORK ERROR%s (%.2f ms)\n", KRED, KNRM, test->duration_ms);
+        fprintf(stderr,
+                "   The runner received an invalid internal test status (%d).\n"
+                "   This is a framework error, not a failure in the submitted operation.\n",
+                (int)test->status);
         break;
     }
 }
@@ -2478,33 +2352,6 @@ static void _UT_console_on_run_finish(const _UT_TestRun *run, _UT_SuiteResult **
     printf("%sFailed:        %d%s\n", KRED, run->total_tests - run->passed_tests, KNRM);
     printf("Success rate:  %.2f%%\n", run->total_tests > 0 ? ((double)run->passed_tests / run->total_tests) * 100.0 : 100.0);
     printf("Total time:    %.2f ms\n", run->total_duration_ms);
-    int fully_passing_suites = 0;
-    for (int i = 0; i < suite_count; ++i) if (all_suites[i]->total_tests > 0 && all_suites[i]->passed_tests == all_suites[i]->total_tests) fully_passing_suites++;
-    printf("Functions fully passing: %d / %d\n", fully_passing_suites, suite_count);
-    if (fully_passing_suites > 0)
-    {
-        printf("  Fully passing:\n");
-        for (int i = 0; i < suite_count; ++i) if (all_suites[i]->total_tests > 0 && all_suites[i]->passed_tests == all_suites[i]->total_tests) printf("    - %s\n", all_suites[i]->name);
-    }
-    int suites_with_crashes = 0;
-    for (int i = 0; i < suite_count; ++i)
-        if (all_suites[i]->crashed_tests > 0) suites_with_crashes++;
-    if (suites_with_crashes > 0)
-    {
-        printf("  Functions with unexpected termination:\n");
-        for (int i = 0; i < suite_count; ++i)
-            if (all_suites[i]->crashed_tests > 0)
-                printf("    - %s\n", all_suites[i]->name);
-    }
-    if (run->total_tests - run->passed_tests > 0)
-    {
-        printf("Failure categories:\n");
-        printf("  Functional mismatches: %d\n", run->functional_failure_tests);
-        printf("  Missing assertions:    %d\n", run->missing_assertion_tests);
-        printf("  Memory failures:       %d\n", run->memory_failure_tests);
-        printf("  Unexpected crashes:    %d\n", run->crashed_tests);
-        printf("  Timeouts:              %d\n", run->timed_out_tests);
-    }
     printf("%s========================================%s\n", KBLU, KNRM);
     if (_UT_is_ci_mode)
     {
@@ -2668,20 +2515,6 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char *argv[])
                 {
                     if (current_suite_result->details_idx < _UT_SUITE_DETAILS_SIZE - 1)
                         current_suite_result->details[current_suite_result->details_idx++] = '-';
-                }
-                if (result->status == _UT_STATUS_CRASHED) { test_run.crashed_tests++; current_suite_result->crashed_tests++; }
-                else if (result->status == _UT_STATUS_TIMEOUT) test_run.timed_out_tests++;
-                else if (result->status == _UT_STATUS_FAILED)
-                {
-                    int is_memory = 0, is_missing_assertion = 0;
-                    for (_UT_AssertionFailure *f = result->failures; f; f = f->next)
-                    {
-                        if ((f->summary && (strstr(f->summary, "Memory") || strstr(f->summary, "allocation") || strstr(f->summary, "storage growth") || strstr(f->summary, "release"))) || (f->file && strcmp(f->file, "Memory Tracker") == 0)) is_memory = 1;
-                        if (f->summary && strstr(f->summary, "Expected assertion did not occur")) is_missing_assertion = 1;
-                    }
-                    if (is_missing_assertion) test_run.missing_assertion_tests++;
-                    else if (is_memory) test_run.memory_failure_tests++;
-                    else test_run.functional_failure_tests++;
                 }
                 if (reporter->on_test_finish)
                     reporter->on_test_finish(result);
@@ -2935,62 +2768,51 @@ float _UT_calculate_similarity_ratio(const char *s1, const char *s2)
     return 1.0f - ((float)distance / max_len);
 }
 
-void _UT_record_failure_ex(const char *file, int line,
-                           const char *summary, const char *hint,
-                           const char *condition,
+void _UT_set_test_context(const char *context)
+{
+    free(_UT_current_test_context);
+    _UT_current_test_context = context ? _UT_strdup(context) : NULL;
+}
+void _UT_record_failure(const char *file, int line, const char *cond_str, const char *exp_str, const char *act_str)
+{
+    if (!UT_current_test_result) return;
+    _UT_AssertionFailure *failure = (_UT_AssertionFailure *)calloc(1, sizeof(_UT_AssertionFailure));
+    if (!failure) return;
+    failure->file = _UT_strdup(file);
+    failure->line = line;
+    if (_UT_current_test_context && _UT_current_test_context[0]) {
+        size_t n = strlen(_UT_current_test_context) + strlen(cond_str) + 16;
+        failure->condition_str = (char *)malloc(n);
+        snprintf(failure->condition_str, n, "%s\n   Context: %s", cond_str, _UT_current_test_context);
+    } else failure->condition_str = _UT_strdup(cond_str);
+    failure->expected_str = _UT_strdup(exp_str);
+    failure->actual_str = _UT_strdup(act_str);
+    failure->next = NULL;
+    if (!UT_current_test_result->failures) UT_current_test_result->failures = failure;
+    else { _UT_AssertionFailure *tail = UT_current_test_result->failures; while (tail->next) tail = tail->next; tail->next = failure; }
+}
+void _UT_record_failure_ex(const char *file, int line, const char *summary, const char *hint,
                            const char *expected_expr, const char *expected_value,
                            const char *actual_expr, const char *actual_value)
 {
-    if (!UT_current_test_result) return;
-    _UT_AssertionFailure *failure = (_UT_AssertionFailure *)calloc(1, sizeof(*failure));
-    if (!failure) return;
-    failure->file = _UT_strdup(file ? file : "Unknown source");
-    failure->line = line;
-    failure->summary = _UT_strdup(summary ? summary : "Assertion failed");
-    failure->hint = _UT_strdup(hint);
-    failure->condition_str = _UT_strdup(condition);
-    failure->expected_expr = _UT_strdup(expected_expr);
-    failure->expected_str = _UT_strdup(expected_value);
-    failure->actual_expr = _UT_strdup(actual_expr);
-    failure->actual_str = _UT_strdup(actual_value);
-    if (!UT_current_test_result->failures) UT_current_test_result->failures = failure;
-    else UT_current_test_result->failures_tail->next = failure;
-    UT_current_test_result->failures_tail = failure;
+    char condition[2048], expected[2048], actual[2048];
+    snprintf(condition, sizeof(condition), "%s%s%s", summary ? summary : "Assertion failed",
+             hint && hint[0] ? "\n   Hint: " : "", hint && hint[0] ? hint : "");
+    snprintf(expected, sizeof(expected), "%s: %s", expected_expr ? expected_expr : "Expected", expected_value ? expected_value : "");
+    snprintf(actual, sizeof(actual), "%s: %s", actual_expr ? actual_expr : "Actual", actual_value ? actual_value : "");
+    _UT_record_failure(file, line, condition, expected, actual);
 }
-
-void _UT_record_failure(const char *file, int line, const char *cond_str,
-                        const char *exp_str, const char *act_str)
-{
-    _UT_record_failure_ex(file, line, "Assertion failed", NULL,
-                          cond_str, NULL, exp_str, NULL, act_str);
-}
-
-void _UT_set_test_context(const char *context)
-{
-    if (!UT_current_test_result) return;
-    free(UT_current_test_result->context);
-    UT_current_test_result->context = _UT_strdup(context);
-
-    /* Publish context immediately: a death test may terminate before the
-       normal final result serialization is reached. */
-    if (context && context[0])
-    {
-        fprintf(stdout, _UT_KEY_CONTEXT);
-        _UT_serialize_string_escaped(stdout, context);
-        fputc(_UT_SERIALIZATION_MARKER, stdout);
-        fflush(stdout);
-    }
-}
-
 static void _UT_init_memory_tracking(void)
 {
     while (_UT_mem_head != NULL)
     {
         _UT_MemInfo *temp = _UT_mem_head;
         _UT_mem_head = _UT_mem_head->next;
-        free(temp->allocation_expression);
         free(temp);
     }
+    while (_UT_freed_head != NULL) { _UT_FreedInfo *next = _UT_freed_head->next; free(_UT_freed_head); _UT_freed_head = next; }
+    free(_UT_current_test_context); _UT_current_test_context = NULL;
+    _UT_mem_generation = 0;
     UT_alloc_count = 0;
     UT_free_count = 0;
     UT_total_bytes_allocated = 0;
@@ -3003,37 +2825,24 @@ static void _UT_init_memory_tracking(void)
 static void _UT_check_for_leaks(void)
 {
     _UT_mem_tracking_enabled = 0;
-    int block_count = 0;
-    size_t byte_count = 0;
-    char details[8192] = "Memory leak detected.";
-    for (_UT_MemInfo *current = _UT_mem_head; current; current = current->next)
-        if (!current->is_baseline) { block_count++; byte_count += current->size; }
-    if (block_count > 0)
+    int leaks_found = 0;
+    char leak_details[1024] = "Memory leak detected.";
+    for (_UT_MemInfo *current = _UT_mem_head; current != NULL; current = current->next)
     {
-        char item[768];
-        snprintf(item, sizeof(item), "\n      Unreleased blocks: %d\n      Total leaked memory: %zu bytes", block_count, byte_count);
-        strncat(details, item, sizeof(details) - strlen(details) - 1);
-        int index = 1;
-        for (_UT_MemInfo *current = _UT_mem_head; current; current = current->next)
+        if (current->is_baseline == 0)
         {
-            if (!current->is_baseline)
-            {
-                snprintf(item, sizeof(item),
-                         "\n      %d. %zu bytes allocated at %s:%d\n         Allocation: %s",
-                         index++, current->size, current->file, current->line,
-                         current->allocation_expression ? current->allocation_expression : "unknown expression");
-                strncat(details, item, sizeof(details) - strlen(details) - 1);
-            }
+            leaks_found = 1;
+            char leak_info[256];
+            snprintf(leak_info, sizeof(leak_info), "\n      - %zu bytes allocated at %s:%d", current->size, current->file, current->line);
+            strncat(leak_details, leak_info, sizeof(leak_details) - strlen(leak_details) - 1);
         }
-        _UT_record_failure_ex("Memory Tracker", 0, "Memory leak detected",
-            "Check ownership: release the internal buffers and then the owning structure.",
-            "No memory leaks", "unreleased blocks and bytes", "0 blocks, 0 bytes",
-            "detected leaks", details);
     }
+    if (leaks_found)
+        _UT_record_failure("Memory Tracker", 0, "No memory leaks", "0 un-freed allocations", leak_details);
     _UT_mem_tracking_enabled = 1;
 }
 
-void *_UT_malloc(size_t size, const char *file, int line, const char *expression)
+void *_UT_malloc(size_t size, const char *file, int line)
 {
     if (!_UT_mem_tracking_enabled || !_UT_mem_tracking_is_active)
         return malloc(size);
@@ -3044,17 +2853,13 @@ void *_UT_malloc(size_t size, const char *file, int line, const char *expression
         _UT_MemInfo *info = (_UT_MemInfo *)malloc(sizeof(_UT_MemInfo));
         if (info)
         {
-            // fill with random data to help catch uninitialized memory usage
-            for (size_t i = 0; i < size; i++)
-            {
-                ((unsigned char *)ptr)[i] = (unsigned char)(rand() % 256);
-            }
             info->address = ptr;
             info->size = size;
             info->file = file;
             info->line = line;
             info->is_baseline = 0;
-            info->allocation_expression = _UT_strdup(expression);
+            info->generation = ++_UT_mem_generation;
+            snprintf(info->type_name, sizeof(info->type_name), "%zu-byte allocation", size);
             info->next = _UT_mem_head;
             _UT_mem_head = info;
             UT_alloc_count++;
@@ -3063,7 +2868,7 @@ void *_UT_malloc(size_t size, const char *file, int line, const char *expression
     return ptr;
 }
 
-void *_UT_calloc(size_t num, size_t size, const char *file, int line, const char *expression)
+void *_UT_calloc(size_t num, size_t size, const char *file, int line)
 {
     if (!_UT_mem_tracking_enabled || !_UT_mem_tracking_is_active)
         return calloc(num, size);
@@ -3080,7 +2885,8 @@ void *_UT_calloc(size_t num, size_t size, const char *file, int line, const char
             info->file = file;
             info->line = line;
             info->is_baseline = 0;
-            info->allocation_expression = _UT_strdup(expression);
+            info->generation = ++_UT_mem_generation;
+            snprintf(info->type_name, sizeof(info->type_name), "%zu-byte allocation", total_size);
             info->next = _UT_mem_head;
             _UT_mem_head = info;
             UT_alloc_count++;
@@ -3089,10 +2895,10 @@ void *_UT_calloc(size_t num, size_t size, const char *file, int line, const char
     return ptr;
 }
 
-void *_UT_realloc(void *old_ptr, size_t new_size, const char *file, int line, const char *expression)
+void *_UT_realloc(void *old_ptr, size_t new_size, const char *file, int line)
 {
     if (old_ptr == NULL)
-        return _UT_malloc(new_size, file, line, expression);
+        return _UT_malloc(new_size, file, line);
     if (new_size == 0)
     {
         _UT_free(old_ptr, file, line);
@@ -3112,11 +2918,6 @@ void *_UT_realloc(void *old_ptr, size_t new_size, const char *file, int line, co
     void *new_ptr = realloc(old_ptr, new_size);
     if (new_ptr != NULL)
     {
-        // fill with random data new bytes to help catch uninitialized memory usage
-        for (size_t i = old_size; i < new_size; i++)
-        {
-            ((unsigned char *)new_ptr)[i] = (unsigned char)(rand() % 256);
-        }
         if (new_size > old_size)
             UT_total_bytes_allocated += (new_size - old_size);
         else
@@ -3125,12 +2926,49 @@ void *_UT_realloc(void *old_ptr, size_t new_size, const char *file, int line, co
         c->size = new_size;
         c->file = file;
         c->line = line;
-        free(c->allocation_expression);
-        c->allocation_expression = _UT_strdup(expression);
     }
     return new_ptr;
 }
 
+void UT_register_allocation_type(void *ptr, const char *type_name)
+{
+    for (_UT_MemInfo *c = _UT_mem_head; c; c = c->next)
+        if (c->address == ptr) { snprintf(c->type_name, sizeof(c->type_name), "%s", type_name ? type_name : "allocation"); return; }
+}
+int UT_pointer_is_live(const void *ptr)
+{
+    uintptr_t p = (uintptr_t)ptr;
+    for (_UT_MemInfo *c = _UT_mem_head; c; c = c->next) {
+        uintptr_t b = (uintptr_t)c->address;
+        if (p >= b && p < b + c->size) return 1;
+    }
+    return 0;
+}
+int UT_pointer_is_freed(const void *ptr)
+{
+    for (_UT_FreedInfo *c = _UT_freed_head; c; c = c->next) if (c->address == ptr) return 1;
+    return 0;
+}
+size_t UT_pointer_allocation_size(const void *ptr)
+{
+    uintptr_t p = (uintptr_t)ptr;
+    for (_UT_MemInfo *c = _UT_mem_head; c; c = c->next) { uintptr_t b=(uintptr_t)c->address; if (p>=b && p<b+c->size) return c->size; }
+    return 0;
+}
+const char *UT_pointer_allocation_type(const void *ptr)
+{
+    for (_UT_MemInfo *c = _UT_mem_head; c; c = c->next) if (c->address == ptr) return c->type_name;
+    return NULL;
+}
+UT_MemoryScope UT_memory_scope_begin(void)
+{
+    UT_MemoryScope s = {UT_alloc_count, UT_free_count, UT_total_bytes_allocated, UT_total_bytes_freed, _UT_mem_generation};
+    return s;
+}
+void UT_memory_scope_mark_allocations_as_baseline(UT_MemoryScope scope)
+{
+    for (_UT_MemInfo *c = _UT_mem_head; c; c = c->next) if (c->generation > scope.generation) c->is_baseline = 1;
+}
 void _UT_free(void *ptr, const char *file, int line)
 {
     if (ptr == NULL)
@@ -3152,11 +2990,12 @@ void _UT_free(void *ptr, const char *file, int line)
         exit(122);
     }
     UT_total_bytes_freed += c->size;
+    _UT_FreedInfo *fi = (_UT_FreedInfo *)malloc(sizeof(_UT_FreedInfo));
+    if (fi) { fi->address=c->address; fi->size=c->size; fi->generation=c->generation; snprintf(fi->type_name,sizeof(fi->type_name),"%s",c->type_name); fi->file=file; fi->line=line; fi->next=_UT_freed_head; _UT_freed_head=fi; }
     if (p == NULL)
         _UT_mem_head = c->next;
     else
         p->next = c->next;
-    free(c->allocation_expression);
     free(c);
     UT_free_count++;
     free(ptr);

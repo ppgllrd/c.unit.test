@@ -30,10 +30,53 @@ static bool _validateList(struct CircularLinkedList* list, char* buf, size_t siz
     return _v((struct Y*)list, buf, size);
 }
 
-#define EQUAL_CIRCULAR_LINKED_LIST_MSG(expected, actual, summary, hint) \
-    EQUAL_BY_MSG(expected, actual, _equalLists, __p, summary, hint)
+#define EQUAL_CIRCULAR_LINKED_LIST_MSG(expected, actual, summary, hint)          \
+    do {                                                                         \
+        struct CircularLinkedList* _ut_expected_list = (expected);               \
+        struct CircularLinkedList* _ut_actual_list = (actual);                   \
+        if (!_equalLists(_ut_expected_list, _ut_actual_list)) {                  \
+            char _ut_expected_text[1024] = {0};                                  \
+            char _ut_actual_text[1024] = {0};                                    \
+            __p(_ut_expected_text, sizeof(_ut_expected_text), _ut_expected_list);\
+            __p(_ut_actual_text, sizeof(_ut_actual_text), _ut_actual_list);       \
+            _UT_record_failure_ex(__FILE__, __LINE__, (summary), (hint),         \
+                                  "expected list", _ut_expected_text,           \
+                                  "observed list", _ut_actual_text);            \
+        }                                                                        \
+    } while (0)
 
-#define VALIDATE_CIRCULAR_LINKED_LIST(list) ASSERT_VALID(list, _validateList, __p)
+#define VALIDATE_CIRCULAR_LINKED_LIST(list)                                      \
+    do {                                                                         \
+        struct CircularLinkedList* _ut_list = (list);                            \
+        char _ut_validation[1024] = {0};                                         \
+        if (!_validateList(_ut_list, _ut_validation, sizeof(_ut_validation)))    \
+            _UT_record_failure_ex(__FILE__, __LINE__,                            \
+                "The circular linked-list structure is invalid",               \
+                "Preserve size, p_last, and exactly one circular traversal.",   \
+                "required structure", "a valid circular linked list",          \
+                "observed structure", _ut_validation);                         \
+    } while (0)
+
+#define EQUAL_INT_MSG(expected, actual, summary, hint)                           \
+    do {                                                                         \
+        int _ut_e = (int)(expected), _ut_a = (int)(actual);                      \
+        if (_ut_e != _ut_a) {                                                    \
+            char _ut_eb[64], _ut_ab[64];                                         \
+            snprintf(_ut_eb, sizeof(_ut_eb), "%d", _ut_e);                    \
+            snprintf(_ut_ab, sizeof(_ut_ab), "%d", _ut_a);                    \
+            _UT_record_failure_ex(__FILE__, __LINE__, (summary), (hint),         \
+                                  "expected value", _ut_eb, #actual, _ut_ab);  \
+        }                                                                        \
+    } while (0)
+
+#define EQUAL_BOOL_MSG(expected, actual, summary, hint)                          \
+    do {                                                                         \
+        bool _ut_e = (bool)(expected), _ut_a = (bool)(actual);                   \
+        if (_ut_e != _ut_a)                                                      \
+            _UT_record_failure_ex(__FILE__, __LINE__, (summary), (hint),         \
+                "expected value", _ut_e ? "true" : "false", #actual,          \
+                _ut_a ? "true" : "false");                                    \
+    } while (0)
 
 /*============================================================================*/
 /* TEST SUITE A: CircularLinkedList_new                                       */
@@ -43,9 +86,9 @@ TEST_CASE(CircularLinkedList_new, "Creates a non-NULL list structure") {
     // result is non NULL, and p_last is NULL and size is 0
     UT_disable_leak_check();
     struct CircularLinkedList* list = CircularLinkedList_new();
-    REFUTE_NULL_MSG(list,
-                    "CircularLinkedList_new returned NULL",
-                    "Allocate and return one CircularLinkedList header before initializing its fields.");
+    REQUIRE_NOT_NULL_MSG(list,
+        "CircularLinkedList_new returned NULL",
+        "Allocate and return one CircularLinkedList header before initializing its fields.");
     if (list != NULL) {
         VALIDATE_CIRCULAR_LINKED_LIST(list);
         EQUAL_POINTER_MSG(NULL, list->p_last,
