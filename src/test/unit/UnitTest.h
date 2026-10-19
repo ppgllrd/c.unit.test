@@ -2854,12 +2854,12 @@ static void _UT_release_quarantined_blocks(void)
     for (_UT_FreedInfo *fi = _UT_freed_head; fi; fi = fi->next)
         if (fi->is_quarantined) { free(fi->address); fi->is_quarantined = 0; }
 }
-static void _UT_forget_freed_address(const void *address)
+static void _UT_forget_freed_address(uintptr_t address)
 {
     _UT_FreedInfo *c = _UT_freed_head, *p = NULL;
     while (c) {
         _UT_FreedInfo *next = c->next;
-        if (c->address == address && !c->is_quarantined) {
+        if ((uintptr_t)c->address == address && !c->is_quarantined) {
             if (p) p->next = next; else _UT_freed_head = next;
             free(c);
         } else p = c;
@@ -2914,7 +2914,7 @@ void *_UT_malloc(size_t size, const char *file, int line)
     void *ptr = malloc(size);
     if (ptr)
     {
-        _UT_forget_freed_address(ptr);
+        _UT_forget_freed_address((uintptr_t)ptr);
         UT_total_bytes_allocated += size;
         _UT_MemInfo *info = (_UT_MemInfo *)malloc(sizeof(_UT_MemInfo));
         if (info)
@@ -2942,7 +2942,7 @@ void *_UT_calloc(size_t num, size_t size, const char *file, int line)
     if (ptr)
     {
         size_t total_size = num * size;
-        _UT_forget_freed_address(ptr);
+        _UT_forget_freed_address((uintptr_t)ptr);
         UT_total_bytes_allocated += total_size;
         _UT_MemInfo *info = (_UT_MemInfo *)malloc(sizeof(_UT_MemInfo));
         if (info)
@@ -2985,7 +2985,7 @@ void *_UT_realloc(void *old_ptr, size_t new_size, const char *file, int line)
     void *new_ptr = realloc(old_ptr, new_size);
     if (new_ptr != NULL)
     {
-        _UT_forget_freed_address(new_ptr);
+        _UT_forget_freed_address((uintptr_t)new_ptr);
         if (new_size > old_size)
             UT_total_bytes_allocated += (new_size - old_size);
         else
