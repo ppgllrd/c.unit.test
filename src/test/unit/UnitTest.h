@@ -330,6 +330,16 @@ static void _UT_init_colors(void)
 /* SECTION 4: ADVANCED MEMORY TRACKING                                        */
 /*============================================================================*/
 #ifdef UT_MEMORY_TRACKING_ENABLED
+/* Freed blocks are poisoned and quarantined by default. */
+#ifndef UT_MEMORY_POISON_ENABLED
+#define UT_MEMORY_POISON_ENABLED 1
+#endif
+#ifndef UT_MEMORY_QUARANTINE_ENABLED
+#define UT_MEMORY_QUARANTINE_ENABLED 1
+#endif
+#ifndef UT_FREED_MEMORY_POISON
+#define UT_FREED_MEMORY_POISON 0xDDu
+#endif
 
 // Shared global state for memory tracking.
 // Declared as 'extern' so all modules see the same variables.
@@ -366,6 +376,7 @@ typedef struct _UT_FreedInfo {
     char type_name[96];
     const char *file;
     int line;
+    int is_quarantined;
     struct _UT_FreedInfo *next;
 } _UT_FreedInfo;
 
@@ -384,6 +395,7 @@ size_t UT_total_bytes_freed = 0;
 // Forward declarations for internal memory tracking functions
 static void _UT_init_memory_tracking(void);
 static void _UT_check_for_leaks(void);
+static void _UT_release_quarantined_blocks(void);
 
 #endif // UNIT_TEST_IMPLEMENTATION
 
@@ -1089,10 +1101,10 @@ int _UT_compare_string(const char *a, const char *b);
 /**
  * @brief (Memory Tracking) Asserts that there are no memory leaks at this point.
  */
-#define ASSERT_NO_LEAKS()     \
-    do                        \
-    {                         \
-        UT_check_for_leaks(); \
+#define ASSERT_NO_LEAKS()      \
+    do                         \
+    {                          \
+        _UT_check_for_leaks(); \
     } while (0)
 #endif
 
@@ -1158,47 +1170,69 @@ int _UT_compare_string(const char *a, const char *b);
 #endif
 
 /**
- * @brief Asserts that two float values are within a given tolerance of each other.
+ * @brief Asserts that two finite float values are within a given tolerance.
  * @param expected The expected float value.
  * @param actual The actual float value.
- * @param tolerance The maximum allowed difference.
+ * @param tolerance The non-negative maximum allowed difference.
  */
-#define NEAR_FLOAT(expected, actual, tolerance)                                                           \
-    do                                                                                                    \
-    {                                                                                                     \
-        float e = (expected);                                                                             \
-        float a = (actual);                                                                               \
-        float t = (tolerance);                                                                            \
-        if (fabsf(e - a) > t)                                                                             \
-        {                                                                                                 \
-            char e_buf[128], a_buf[128], cond_str[256];                                                   \
-            snprintf(e_buf, sizeof(e_buf), "%f", e);                                                      \
-            snprintf(a_buf, sizeof(a_buf), "%f (difference: %e)", a, fabsf(e - a));                       \
-            snprintf(cond_str, sizeof(cond_str), "fabsf(%s - %s) <= %s", #expected, #actual, #tolerance); \
-            _UT_record_failure(__FILE__, __LINE__, cond_str, e_buf, a_buf);                               \
-        }                                                                                                 \
+#define NEAR_FLOAT(expected, actual, tolerance)                              \
+    do                                                                       \
+    {                                                                        \
+        float e = (expected);                                                \
+        float a = (actual);                                                  \
+        float t = (tolerance);                                               \
+        float d = fabsf(e - a);                                              \
+                                                                             \
+        if (!isfinite(e) || !isfinite(a) || !isfinite(t) ||                  \
+            t < 0.0f || !(d <= t))                                           \
+        {                                                                    \
+            char e_buf[128];                                                 \
+            char a_buf[128];                                                 \
+            char cond_str[256];                                              \
+                                                                             \
+            snprintf(e_buf, sizeof(e_buf), "%f", e);                         \
+            snprintf(a_buf, sizeof(a_buf),                                   \
+                     "%f (difference: %e)", a, d);                           \
+            snprintf(cond_str, sizeof(cond_str),                             \
+                     "finite values and fabsf(%s - %s) <= %s",               \
+                     #expected, #actual, #tolerance);                        \
+                                                                             \
+            _UT_record_failure(                                              \
+                __FILE__, __LINE__, cond_str, e_buf, a_buf);                 \
+        }                                                                    \
     } while (0)
 
 /**
- * @brief Asserts that two double values are within a given tolerance of each other.
+ * @brief Asserts that two finite double values are within a given tolerance.
  * @param expected The expected double value.
  * @param actual The actual double value.
- * @param tolerance The maximum allowed difference.
+ * @param tolerance The non-negative maximum allowed difference.
  */
-#define NEAR_DOUBLE(expected, actual, tolerance)                                                         \
-    do                                                                                                   \
-    {                                                                                                    \
-        double e = (expected);                                                                           \
-        double a = (actual);                                                                             \
-        double t = (tolerance);                                                                          \
-        if (fabs(e - a) > t)                                                                             \
-        {                                                                                                \
-            char e_buf[128], a_buf[128], cond_str[256];                                                  \
-            snprintf(e_buf, sizeof(e_buf), "%lf", e);                                                    \
-            snprintf(a_buf, sizeof(a_buf), "%lf (difference: %e)", a, fabs(e - a));                      \
-            snprintf(cond_str, sizeof(cond_str), "fabs(%s - %s) <= %s", #expected, #actual, #tolerance); \
-            _UT_record_failure(__FILE__, __LINE__, cond_str, e_buf, a_buf);                              \
-        }                                                                                                \
+#define NEAR_DOUBLE(expected, actual, tolerance)                             \
+    do                                                                       \
+    {                                                                        \
+        double e = (expected);                                               \
+        double a = (actual);                                                 \
+        double t = (tolerance);                                              \
+        double d = fabs(e - a);                                              \
+                                                                             \
+        if (!isfinite(e) || !isfinite(a) || !isfinite(t) ||                  \
+            t < 0.0f || !(d <= t))                                           \
+        {                                                                    \
+            char e_buf[128];                                                 \
+            char a_buf[128];                                                 \
+            char cond_str[256];                                              \
+                                                                             \
+            snprintf(e_buf, sizeof(e_buf), "%f", e);                         \
+            snprintf(a_buf, sizeof(a_buf),                                   \
+                     "%f (difference: %e)", a, d);                           \
+            snprintf(cond_str, sizeof(cond_str),                             \
+                     "finite values and fabsf(%s - %s) <= %s",               \
+                     #expected, #actual, #tolerance);                         \
+                                                                             \
+            _UT_record_failure(                                              \
+                __FILE__, __LINE__, cond_str, e_buf, a_buf);                 \
+        }                                                                    \
     } while (0)
 
 /**
@@ -2425,6 +2459,9 @@ int _UT_RUN_ALL_TESTS_impl(int argc, char *argv[])
                 else
                     UT_current_test_result->status = _UT_STATUS_FAILED;
                 _UT_serialize_result(stdout, UT_current_test_result);
+#ifdef UT_MEMORY_TRACKING_ENABLED
+                _UT_release_quarantined_blocks();
+#endif
                 _UT_free_test_result(UT_current_test_result);
                 return 0;
             }
@@ -2802,6 +2839,33 @@ void _UT_record_failure_ex(const char *file, int line, const char *summary, cons
     snprintf(actual, sizeof(actual), "%s: %s", actual_expr ? actual_expr : "Actual", actual_value ? actual_value : "");
     _UT_record_failure(file, line, condition, expected, actual);
 }
+static void _UT_poison_memory(void *ptr, size_t size)
+{
+#if UT_MEMORY_POISON_ENABLED
+    volatile unsigned char *bytes = (volatile unsigned char *)ptr;
+    for (size_t i = 0; i < size; ++i)
+        bytes[i] = (unsigned char)UT_FREED_MEMORY_POISON;
+#else
+    (void)ptr; (void)size;
+#endif
+}
+static void _UT_release_quarantined_blocks(void)
+{
+    for (_UT_FreedInfo *fi = _UT_freed_head; fi; fi = fi->next)
+        if (fi->is_quarantined) { free(fi->address); fi->is_quarantined = 0; }
+}
+static void _UT_forget_freed_address(const void *address)
+{
+    _UT_FreedInfo *c = _UT_freed_head, *p = NULL;
+    while (c) {
+        _UT_FreedInfo *next = c->next;
+        if (c->address == address && !c->is_quarantined) {
+            if (p) p->next = next; else _UT_freed_head = next;
+            free(c);
+        } else p = c;
+        c = next;
+    }
+}
 static void _UT_init_memory_tracking(void)
 {
     while (_UT_mem_head != NULL)
@@ -2810,6 +2874,7 @@ static void _UT_init_memory_tracking(void)
         _UT_mem_head = _UT_mem_head->next;
         free(temp);
     }
+    _UT_release_quarantined_blocks();
     while (_UT_freed_head != NULL) { _UT_FreedInfo *next = _UT_freed_head->next; free(_UT_freed_head); _UT_freed_head = next; }
     free(_UT_current_test_context); _UT_current_test_context = NULL;
     _UT_mem_generation = 0;
@@ -2849,6 +2914,7 @@ void *_UT_malloc(size_t size, const char *file, int line)
     void *ptr = malloc(size);
     if (ptr)
     {
+        _UT_forget_freed_address(ptr);
         UT_total_bytes_allocated += size;
         _UT_MemInfo *info = (_UT_MemInfo *)malloc(sizeof(_UT_MemInfo));
         if (info)
@@ -2876,6 +2942,7 @@ void *_UT_calloc(size_t num, size_t size, const char *file, int line)
     if (ptr)
     {
         size_t total_size = num * size;
+        _UT_forget_freed_address(ptr);
         UT_total_bytes_allocated += total_size;
         _UT_MemInfo *info = (_UT_MemInfo *)malloc(sizeof(_UT_MemInfo));
         if (info)
@@ -2918,6 +2985,7 @@ void *_UT_realloc(void *old_ptr, size_t new_size, const char *file, int line)
     void *new_ptr = realloc(old_ptr, new_size);
     if (new_ptr != NULL)
     {
+        _UT_forget_freed_address(new_ptr);
         if (new_size > old_size)
             UT_total_bytes_allocated += (new_size - old_size);
         else
@@ -2946,7 +3014,9 @@ int UT_pointer_is_live(const void *ptr)
 }
 int UT_pointer_is_freed(const void *ptr)
 {
-    for (_UT_FreedInfo *c = _UT_freed_head; c; c = c->next) if (c->address == ptr) return 1;
+    if (ptr == NULL || UT_pointer_is_live(ptr)) return 0;
+    for (_UT_FreedInfo *c = _UT_freed_head; c; c = c->next)
+        if (c->address == ptr) return 1;
     return 0;
 }
 size_t UT_pointer_allocation_size(const void *ptr)
@@ -2991,14 +3061,23 @@ void _UT_free(void *ptr, const char *file, int line)
     }
     UT_total_bytes_freed += c->size;
     _UT_FreedInfo *fi = (_UT_FreedInfo *)malloc(sizeof(_UT_FreedInfo));
-    if (fi) { fi->address=c->address; fi->size=c->size; fi->generation=c->generation; snprintf(fi->type_name,sizeof(fi->type_name),"%s",c->type_name); fi->file=file; fi->line=line; fi->next=_UT_freed_head; _UT_freed_head=fi; }
-    if (p == NULL)
-        _UT_mem_head = c->next;
-    else
-        p->next = c->next;
+    if (!fi) { fprintf(stderr, "FATAL: memory tracker metadata allocation failed at %s:%d\n", file, line); exit(123); }
+    fi->address=c->address; fi->size=c->size; fi->generation=c->generation;
+    snprintf(fi->type_name,sizeof(fi->type_name),"%s",c->type_name);
+    fi->file=file; fi->line=line;
+#if UT_MEMORY_QUARANTINE_ENABLED
+    fi->is_quarantined=1;
+#else
+    fi->is_quarantined=0;
+#endif
+    fi->next=_UT_freed_head; _UT_freed_head=fi;
+    if (p == NULL) _UT_mem_head = c->next; else p->next = c->next;
+    _UT_poison_memory(ptr, c->size);
     free(c);
     UT_free_count++;
+#if !UT_MEMORY_QUARANTINE_ENABLED
     free(ptr);
+#endif
 }
 
 #pragma pop_macro("free")
